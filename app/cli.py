@@ -73,7 +73,28 @@ def run_seed(industry: str, *, slug: str, channel_secret: str,
         return company.id
 
 
+def _ensure_utf8_stdout() -> None:
+    """重新導向過的 stdout(存成記錄檔、被別的程式接手 pipe、排進 CI 步驟)
+    在繁體中文 Windows 上預設編碼是系統的 ANSI code page(cp950)。只有
+    真正連著 Windows 主控台時,Python 才會自動走 UTF-8 的主控台 API——
+    一旦被重新導向就退回 cp950,印「✓」這類字元會直接 UnicodeEncodeError
+    崩潰,而這是成功路徑,不是邊角案例。這個工具的目標機器就是客戶端的
+    繁體中文 Windows,不能只在互動式主控台下才動。
+
+    reconfigure() 不是每個 stream 物件都有(測試裡接管 stdout 的替身
+    可能沒有這個方法),所以先檢查再呼叫;失敗就照舊使用原本的 stdout,
+    不能讓「修編碼」這個附加動作本身變成新的崩潰點。
+    """
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
 def main(argv=None) -> int:
+    _ensure_utf8_stdout()
     parser = argparse.ArgumentParser(prog="app.cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

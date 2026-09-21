@@ -1,6 +1,9 @@
+import io
+import sys
+
 import pytest
 
-from app.cli import run_seed, run_validate
+from app.cli import main, run_seed, run_validate
 from app.crypto import decrypt
 from app.database import Base, engine, session_scope
 from app.models import Company
@@ -47,3 +50,54 @@ def test_seed_creates_separate_company_for_different_slug():
     assert a != b
     with session_scope() as db:
         assert db.query(Company).count() == 2
+
+
+def test_seed_refuses_and_writes_nothing_when_validate_reports_errors(monkeypatch):
+    """run_seed 在資料有 ERROR 時拒絕寫入,是這整個任務最關鍵的安全閂——
+    Task 4 的 ERROR/BLOCK 分級存在的唯一理由,就是讓壞資料不可能寫進
+    Company 表。只驗有沒有丟 SystemExit 不夠:「丟了例外」跟「真的沒
+    寫入」是兩件不同的事,一個鬆掉 ERROR 篩選條件、或把 validate 和
+    寫入順序對調的重構,可能只做到前者卻仍然寫壞資料進去。兩者都驗。
+
+    用 monkeypatch 直接換掉 _load,不去動 industries/restaurant/ 底下
+    那份要保持乾淨可用的真實資料。
+    """
+    bad_data = {
+        "company": {"name": "壞公司", "industry": "restaurant", "hours": "17:00-24:00",
+                     "contact": "02-0000-0000", "tone": "測試用",
+                     "forbidden_phrases": ["保證"]},
+        # 答案命中自己的禁語清單 → validate 規則 3 判 ERROR
+        "faq": [{"q": "測試問題", "a": "我們保證絕對可以處理。"}],
+        "policies": [], "escalation": [], "glossary": [],
+    }
+    monkeypatch.setattr("app.cli._load", lambda industry: bad_data)
+
+    with pytest.raises(SystemExit):
+        run_seed("restaurant", slug="broken", channel_secret="s", channel_token="t")
+
+    with session_scope() as db:
+        assert db.query(Company).count() == 0
+
+
+def test_main_validate_smoke_survives_non_utf8_stdout(monkeypatch):
+    """main() 目前沒有任何測試呼叫過它——這正是 stdout 編碼那個 bug
+    (cp950 主控台印不出「✓」就整個崩潰)可以躲在全綠測試套件後面的
+    原因:所有其他測試都只呼叫 run_validate/run_seed,從不經過
+    main()/_report() 真正 print 的那幾行。
+
+    pytest 的 capsys/capfd 兩個 fixture 都會把 stdout 強制換成
+    UTF-8(已經用探測測試驗證過:兩者接 print('✓') 都不會出事),
+    不會重現這個 bug,所以這裡不用它們,直接換一個明確用 cp950
+    (繁體中文 Windows 的系統編碼,也是這個 bug 實際發生的編碼)包起來
+    的 stdout 替身,對到真正會出事的條件。
+    """
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp950", newline="")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+
+    rc = main(["validate", "--industry", "restaurant"])
+
+    fake_stdout.flush()
+    fake_stdout.seek(0)
+    printed = fake_stdout.buffer.getvalue().decode("utf-8")
+    assert rc == 0
+    assert printed.strip()
