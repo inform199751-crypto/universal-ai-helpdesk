@@ -1,3 +1,6 @@
+import pytest
+from jinja2 import UndefinedError
+
 from app.knowledge.render import render_system_prompt
 
 DATA = {
@@ -31,3 +34,16 @@ def test_prompt_contains_faq_and_escalation():
 def test_prompt_does_not_leak_jinja_syntax():
     p = render_system_prompt(DATA)
     assert "{{" not in p and "{%" not in p
+
+
+def test_render_raises_when_data_is_missing_a_referenced_field():
+    """StrictUndefined 是刻意的:樣板引用資料裡沒有的欄位要當場報錯,
+    不要默默算成空字串——那會變成一個少了半段人設的客服。這條測試守著
+    這個決策本身:上面四條測試給的 DATA 都是完整的,就算 render.py
+    改回 Jinja2 預設的 Undefined(靜默算成空字串),那四條也不會發現,
+    要靠故意缺一個欄位才能驗到。
+    """
+    incomplete = {**DATA, "company": {k: v for k, v in DATA["company"].items()
+                                       if k != "contact"}}
+    with pytest.raises(UndefinedError):
+        render_system_prompt(incomplete)
