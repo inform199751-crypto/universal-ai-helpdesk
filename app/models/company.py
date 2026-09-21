@@ -5,38 +5,17 @@
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, LargeBinary, String, Text, func
+from sqlalchemy import JSON, Boolean, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models._mixins import TimestampMixin, _uuid
 
 if TYPE_CHECKING:
     from app.models.knowledge import KnowledgeDocument
     from app.models.user import User
-
-
-def _uuid() -> str:
-    return str(uuid.uuid4())
-
-
-class TimestampMixin:
-    # 決策 8:時間一律存 UTC。DateTime(timezone=True) 在 PostgreSQL 是
-    # timestamptz(內部正規化成 UTC),SQLite 不真的保存時區,但 func.now()
-    # 在兩邊都回傳 UTC(SQLite 的 CURRENT_TIMESTAMP 定義就是 UTC)—— 兩邊
-    # 一致,雙資料庫相容。
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
 class Company(Base, TimestampMixin):

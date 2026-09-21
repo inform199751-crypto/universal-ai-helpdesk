@@ -59,8 +59,12 @@ class ChatHistory(Base):
     )
 
     # 決策 8:native_enum=False —— SQLite 沒有 ENUM 型別,兩邊都落成 VARCHAR。
+    # values_callable:存 .value(小寫字串),不要存 .name,理由見
+    # app/models/user.py 的 mode 欄位。
     role: Mapped[ChatRole] = mapped_column(
-        Enum(ChatRole, native_enum=False, length=16), nullable=False
+        Enum(ChatRole, native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
+        nullable=False
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -73,7 +77,7 @@ class ChatHistory(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     token_count: Mapped[int | None] = mapped_column(Integer)
 
-    # 決策 8:時間一律存 UTC(理由見 app/models/company.py 的 TimestampMixin)。
+    # 決策 8:時間一律存 UTC(理由見 app/models/_mixins.py 的 TimestampMixin)。
     # ChatHistory 不用 TimestampMixin:訊息是不可變的紀錄,沒有 updated_at。
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

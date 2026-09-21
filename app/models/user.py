@@ -6,35 +6,18 @@
 from __future__ import annotations
 
 import enum
-import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models._mixins import TimestampMixin, _uuid
 
 if TYPE_CHECKING:
     from app.models.chat import ChatHistory
     from app.models.company import Company
-
-
-def _uuid() -> str:
-    return str(uuid.uuid4())
-
-
-class TimestampMixin:
-    # 決策 8:時間一律存 UTC(理由見 app/models/company.py 的 TimestampMixin)。
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
 class ConversationMode(str, enum.Enum):
@@ -70,8 +53,12 @@ class User(Base, TimestampMixin):
 
     # 決策 8:native_enum=False —— SQLite 沒有 ENUM 型別,兩邊都落成
     # VARCHAR(length),同一份 model 兩邊都要能跑。
+    # values_callable:存 enum 的 value(小寫/原字串),不要存 name。沒有這個,
+    # SQLAlchemy 預設存 .name(例如 "AI"),日後任何用小寫值查資料庫的 raw SQL
+    # 都會安靜地撞到 0 筆,而且不會報錯。
     mode: Mapped[ConversationMode] = mapped_column(
-        Enum(ConversationMode, native_enum=False, length=8),
+        Enum(ConversationMode, native_enum=False, length=8,
+             values_callable=lambda e: [m.value for m in e]),
         nullable=False,
         default=ConversationMode.AI,
     )

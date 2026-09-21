@@ -2,7 +2,7 @@
 
 Revision ID: 66766e088730
 Revises: 
-Create Date: 2026-09-21 12:18:23.742734
+Create Date: 2026-09-21 15:15:48.218477
 
 """
 from typing import Sequence, Union
@@ -53,7 +53,7 @@ def upgrade() -> None:
     sa.Column('vector_collection', sa.String(length=128), nullable=False),
     sa.Column('chunk_count', sa.Integer(), nullable=False),
     sa.Column('embedding_model', sa.String(length=128), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'INDEXING', 'READY', 'FAILED', name='documentstatus', native_enum=False, length=16), nullable=False),
+    sa.Column('status', sa.Enum('pending', 'indexing', 'ready', 'failed', name='documentstatus', native_enum=False, length=16), nullable=False),
     sa.Column('error_message', sa.Text(), nullable=True),
     sa.Column('indexed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
@@ -85,7 +85,7 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('company_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=False),
-    sa.Column('role', sa.Enum('USER', 'ASSISTANT', 'SYSTEM', 'HUMAN_AGENT', name='chatrole', native_enum=False, length=16), nullable=False),
+    sa.Column('role', sa.Enum('user', 'assistant', 'system', 'human_agent', name='chatrole', native_enum=False, length=16), nullable=False),
     sa.Column('content', sa.Text(), nullable=False),
     sa.Column('line_message_id', sa.String(length=64), nullable=True),
     sa.Column('latency_ms', sa.Integer(), nullable=True),

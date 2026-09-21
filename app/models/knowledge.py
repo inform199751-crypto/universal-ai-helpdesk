@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import enum
-import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -19,31 +18,14 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models._mixins import TimestampMixin, _uuid
 
 if TYPE_CHECKING:
     from app.models.company import Company
-
-
-def _uuid() -> str:
-    return str(uuid.uuid4())
-
-
-class TimestampMixin:
-    # 決策 8:時間一律存 UTC(理由見 app/models/company.py 的 TimestampMixin)。
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
 class DocumentStatus(str, enum.Enum):
@@ -86,8 +68,11 @@ class KnowledgeDocument(Base, TimestampMixin):
     embedding_model: Mapped[str | None] = mapped_column(String(128))
 
     # 決策 8:native_enum=False —— SQLite 沒有 ENUM 型別,兩邊都落成 VARCHAR。
+    # values_callable:存 .value,不要存 .name,理由見 app/models/user.py 的
+    # mode 欄位(這裡 name 跟 value 本來就不同,PENDING vs pending,影響最明顯)。
     status: Mapped[DocumentStatus] = mapped_column(
-        Enum(DocumentStatus, native_enum=False, length=16),
+        Enum(DocumentStatus, native_enum=False, length=16,
+             values_callable=lambda e: [m.value for m in e]),
         nullable=False,
         default=DocumentStatus.PENDING,
     )
