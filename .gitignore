@@ -24,3 +24,6 @@ node_modules/
 .vscode/
 desktop.ini
 Thumbs.db
+
+# SDD 工作區(ledger、brief、review package),是暫存不是產出
+.superpowers/
