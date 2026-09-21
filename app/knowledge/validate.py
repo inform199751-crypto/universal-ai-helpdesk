@@ -20,7 +20,12 @@ REQUIRED_HIGH_RISK = {
     "privacy": "個資",
 }
 PLACEHOLDERS = ("請填入", "TODO", "XXX", "待補")
-HOURS_RE = re.compile(r"\d{1,2}:\d{2}\s*[-~]\s*\d{1,2}:\d{2}")
+HOURS_RE = re.compile(
+    r"(?:"
+    r"\d{1,2}:\d{2}\s*[-~]\s*\d{1,2}:\d{2}|"  # 10:00-19:00 or 10:00~19:00
+    r"(?:24|全天|全日)(?:\s*(?:小時|營業))?"     # 24小時 or 24 小時營業 or 全天 or 全日
+    r")"
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,25 @@ def validate(data: dict[str, Any], *, max_text_length: int = 5000) -> list[Findi
     for i, item in enumerate(data.get("faq") or []):
         if not item.get("q") or not item.get("a"):
             out.append(Finding("ERROR", 2, f"faq[{i}] 的 q 或 a 是空的"))
+    for i, item in enumerate(data.get("policies") or []):
+        if not item.get("title"):
+            out.append(Finding("ERROR", 2, f"policies[{i}] 缺少 title"))
+        if not item.get("content"):
+            out.append(Finding("ERROR", 2, f"policies[{i}] 缺少 content"))
+    for i, item in enumerate(data.get("escalation") or []):
+        if not item.get("level"):
+            out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 level"))
+        if not item.get("trigger"):
+            out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 trigger"))
+        if not item.get("action"):
+            out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 action"))
+        if not item.get("script"):
+            out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 script"))
+    for i, item in enumerate(data.get("glossary") or []):
+        if not item.get("term"):
+            out.append(Finding("ERROR", 2, f"glossary[{i}] 缺少 term"))
+        if not item.get("meaning"):
+            out.append(Finding("ERROR", 2, f"glossary[{i}] 缺少 meaning"))
 
     for where, text in _texts(data):
         # 規則 3:答案違反自己的禁語清單

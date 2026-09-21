@@ -80,3 +80,74 @@ def test_block_does_not_imply_error():
     findings = validate(d)
     assert any(f.level == "BLOCK" for f in findings)
     assert not any(f.level == "ERROR" for f in findings)
+
+
+def test_rule2_escalation_missing_script_is_error():
+    """臨界情況:法律類別存在 (rule 5 過) 但 script 為空 (rule 2 該攔)。
+    客人說「我要提告」,系統沉默。這是 constraint 8 的反面。"""
+    d = _ok_data(escalation=[
+        {"level": "L3", "trigger": "提告 律師 消保官", "action": "transfer",
+         "script": "", "category": "legal"}
+    ])
+    assert "ERROR" in _levels(validate(d), 2)
+
+
+def test_rule2_policies_missing_content_is_error():
+    d = _ok_data(policies=[{"title": "退換貨"}])
+    assert "ERROR" in _levels(validate(d), 2)
+
+
+def test_rule2_escalation_missing_trigger_is_error():
+    d = _ok_data(escalation=[
+        {"level": "L3", "action": "transfer",
+         "script": "這部分我請主管與您聯繫", "category": "legal"}
+    ])
+    assert "ERROR" in _levels(validate(d), 2)
+
+
+def test_rule2_escalation_missing_action_is_error():
+    d = _ok_data(escalation=[
+        {"level": "L3", "trigger": "提告 律師 消保官",
+         "script": "這部分我請主管與您聯繫", "category": "legal"}
+    ])
+    assert "ERROR" in _levels(validate(d), 2)
+
+
+def test_rule2_escalation_missing_level_is_error():
+    d = _ok_data(escalation=[
+        {"trigger": "提告 律師 消保官", "action": "transfer",
+         "script": "這部分我請主管與您聯繫", "category": "legal"}
+    ])
+    assert "ERROR" in _levels(validate(d), 2)
+
+
+def test_rule2_glossary_missing_term_is_error():
+    d = _ok_data(glossary=[{"meaning": "廠商的承諾。"}])
+    assert "ERROR" in _levels(validate(d), 2)
+
+
+def test_rule2_glossary_missing_meaning_is_error():
+    d = _ok_data(glossary=[{"term": "保證"}])
+    assert "ERROR" in _levels(validate(d), 2)
+
+
+def test_rule4_respects_max_text_length_parameter():
+    """Rule 4 讀取參數而非硬編碼 5000。"""
+    d = _ok_data(faq=[{"q": "短問題", "a": "字" * 100}])
+    # 100 字 < 5000,預設應該通過
+    assert "ERROR" not in _levels(validate(d), 4)
+    # 但 max_text_length=50 時應該失敗
+    assert "ERROR" in _levels(validate(d, max_text_length=50), 4)
+
+
+def test_rule8_accepts_24hour_format():
+    """24 小時營業應該通過,不是「解析不了」。"""
+    d = _ok_data()
+    d["company"]["hours"] = "24小時"
+    assert "ERROR" not in _levels(validate(d), 8)
+
+    d["company"]["hours"] = "24 小時營業"
+    assert "ERROR" not in _levels(validate(d), 8)
+
+    d["company"]["hours"] = "全天營業"
+    assert "ERROR" not in _levels(validate(d), 8)
