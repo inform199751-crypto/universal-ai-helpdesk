@@ -358,5 +358,5 @@ class KnowledgeDocument(Base, TimestampMixin):
 
 **仍待決:**
 
-1. 託管平台(Render / Railway / Fly.io)與是否付費 —— 免費方案休眠會讓面試第一則訊息沒反應
+1. ~~託管平台~~ —— **已定**:Cloudflare Tunnel,服務與資料庫都跑本機,不必處理免費 PostgreSQL 到期的問題
 2. 嵌入模型(影響 `embedding_model` 與 collection 命名),v1 用不到,做 RAG 時才需要
