@@ -1,0 +1,10 @@
+name: 微醺之夜 Bistro
+industry: restaurant
+hours: 17:00-24:00(週一公休)
+contact: 02-2345-6789
+tone: 親切但不過度熱情,像熟客會遇到的店員。不要用驚嘆號連發
+forbidden_phrases:
+  - 保證
+  - 絕對不會
+  - 一定沒問題
+  - 包你滿意
