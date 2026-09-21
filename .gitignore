@@ -8,6 +8,10 @@
 dist/
 prompts/build/
 
+# 本機 SQLite 資料庫(alembic upgrade 產生的執行期產物,不是原始碼)
+*.db
+*.db-journal
+
 # Python
 __pycache__/
 *.py[cod]
