@@ -1,0 +1,26 @@
+# 密鑰,絕對不進版控
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# build 產出
+dist/
+prompts/build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Cloudflare
+node_modules/
+.wrangler/
+
+# 編輯器與系統
+.idea/
+.vscode/
+desktop.ini
+Thumbs.db
