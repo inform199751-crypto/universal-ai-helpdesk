@@ -34,6 +34,7 @@ def _uuid() -> str:
 
 
 class TimestampMixin:
+    # 決策 8:時間一律存 UTC(理由見 app/models/company.py 的 TimestampMixin)。
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -65,6 +66,7 @@ class KnowledgeDocument(Base, TimestampMixin):
     # 這個 id 會寫進 Qdrant 每個 point 的 payload。刪除整份文件靠它
     # delete by filter(決策 7)。不存 point id 陣列:一份 200 chunk 的
     # PDF 會塞一個 200 元素的陣列進欄位,而且重新索引後全部作廢。
+    # 決策 8:存 String(36) 不用 PG 原生 UUID 型別 —— 兩邊都要能跑。
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     company_id: Mapped[str] = mapped_column(
         ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
@@ -83,6 +85,7 @@ class KnowledgeDocument(Base, TimestampMixin):
     # 很怪但不報錯」這種最難查的故障(見 schema 文件第三節)。
     embedding_model: Mapped[str | None] = mapped_column(String(128))
 
+    # 決策 8:native_enum=False —— SQLite 沒有 ENUM 型別,兩邊都落成 VARCHAR。
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus, native_enum=False, length=16),
         nullable=False,

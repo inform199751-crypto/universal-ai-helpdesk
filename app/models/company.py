@@ -24,6 +24,10 @@ def _uuid() -> str:
 
 
 class TimestampMixin:
+    # 決策 8:時間一律存 UTC。DateTime(timezone=True) 在 PostgreSQL 是
+    # timestamptz(內部正規化成 UTC),SQLite 不真的保存時區,但 func.now()
+    # 在兩邊都回傳 UTC(SQLite 的 CURRENT_TIMESTAMP 定義就是 UTC)—— 兩邊
+    # 一致,雙資料庫相容。
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -40,6 +44,8 @@ class Company(Base, TimestampMixin):
 
     __tablename__ = "companies"
 
+    # 決策 8:UUID 存 String(36),不用 PostgreSQL 原生 UUID 型別 ——
+    # SQLite 沒有這個型別,同一份 model 兩邊都要能跑。
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
 
     # webhook 路徑用:/webhook/{slug}。決策 2 —— LINE Console 本來就要各自填

@@ -25,6 +25,7 @@ def _uuid() -> str:
 
 
 class TimestampMixin:
+    # 決策 8:時間一律存 UTC(理由見 app/models/company.py 的 TimestampMixin)。
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -56,6 +57,7 @@ class User(Base, TimestampMixin):
         Index("ix_users_company_mode", "company_id", "mode"),
     )
 
+    # 決策 8:UUID 存 String(36),不用 PG 原生型別 —— 兩邊都要能跑。
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     company_id: Mapped[str] = mapped_column(
         ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
@@ -66,6 +68,8 @@ class User(Base, TimestampMixin):
     display_name: Mapped[str | None] = mapped_column(String(200))
     picture_url: Mapped[str | None] = mapped_column(String(500))
 
+    # 決策 8:native_enum=False —— SQLite 沒有 ENUM 型別,兩邊都落成
+    # VARCHAR(length),同一份 model 兩邊都要能跑。
     mode: Mapped[ConversationMode] = mapped_column(
         Enum(ConversationMode, native_enum=False, length=8),
         nullable=False,

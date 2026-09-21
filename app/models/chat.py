@@ -58,6 +58,7 @@ class ChatHistory(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
+    # 決策 8:native_enum=False —— SQLite 沒有 ENUM 型別,兩邊都落成 VARCHAR。
     role: Mapped[ChatRole] = mapped_column(
         Enum(ChatRole, native_enum=False, length=16), nullable=False
     )
@@ -72,6 +73,8 @@ class ChatHistory(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     token_count: Mapped[int | None] = mapped_column(Integer)
 
+    # 決策 8:時間一律存 UTC(理由見 app/models/company.py 的 TimestampMixin)。
+    # ChatHistory 不用 TimestampMixin:訊息是不可變的紀錄,沒有 updated_at。
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
