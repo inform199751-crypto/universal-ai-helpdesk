@@ -47,3 +47,27 @@ def test_render_raises_when_data_is_missing_a_referenced_field():
                                        if k != "contact"}}
     with pytest.raises(UndefinedError):
         render_system_prompt(incomplete)
+
+
+# 常見的「只在簡體中出現」的字。真機上抓到模型把「停車位」寫成「停车位」,
+# 而整份 prompt 從頭到尾沒有規定過語言 —— 資料是繁體的,不代表輸出也是。
+SIMPLIFIED_ONLY = set(
+    "车门时间说这电话问题务单费买卖学实现发请认为语讲让边还进运过达远连适选"
+    "递邮应产业质视频图书会个们来从众点无与万亿东乐国医药术样价钱馆厅欢迎"
+)
+
+
+def test_prompt_tells_the_model_to_answer_in_traditional_chinese():
+    """光靠資料是繁體的不夠。免費模型的語料大量是簡體,沒人明講就會漂移
+    —— 真機上就出現過「停车位」。"""
+    p = render_system_prompt(DATA)
+    assert "繁體中文" in p
+    assert "簡體" in p
+
+
+def test_prompt_itself_contains_no_simplified_characters():
+    """順便守住資料:任何一份行業 YAML 混進簡體字,都會在這裡被抓到。
+    模型看到的範例是簡體,要它回繁體就更難了。"""
+    p = render_system_prompt(DATA)
+    found = sorted(SIMPLIFIED_ONLY & set(p))
+    assert not found, f"prompt 裡出現簡體字:{found}"
