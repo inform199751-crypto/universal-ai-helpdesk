@@ -17,5 +17,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "psycopg[binary]>=3.2"]
 
+[tool.setuptools.packages.find]
+# 明講只有 app 是套件。專案根目錄還有 alembic/、prompts/、industries/、
+# scripts/ —— setuptools 的自動偵測看到多個頂層資料夾就會拒絕建置
+# (Multiple top-level packages discovered in a flat-layout),於是
+# `pip install -e .` 在乾淨的 clone 上直接失敗。開發機看不出來,因為
+# egg-info 早就在了;CI 第一次跑就抓到。
+include = ["app*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
