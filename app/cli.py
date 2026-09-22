@@ -18,14 +18,16 @@ import re
 import sys
 from pathlib import Path
 
-from sqlalchemy import select
-
-from app.crypto import encrypt
-from app.database import session_scope
 from app.knowledge.loader import load_industry
 from app.knowledge.render import render_system_prompt
 from app.knowledge.validate import Finding, validate
-from app.models import ChatHistory, Company
+
+# 注意這裡沒有 import app.database / app.models。
+# app/database.py 在 import 的當下就會 get_settings(),而 Settings 要求
+# FERNET_KEY 與 OPENROUTER_API_KEY —— 一旦在模組層把它拉進來,validate 和
+# list 這兩道「只讀 YAML」的指令就會變成「要先產一把加密金鑰、先辦一個
+# OpenRouter 帳號才跑得起來」。順序是反的:validate 是導入現場第一個會跑的
+# 東西,那時候還沒有任何憑證。所以資料庫相關的東西一律在 run_seed 裡才 import。
 
 ROOT = Path(__file__).resolve().parents[1]
 INDUSTRIES = ROOT / "industries"
@@ -139,6 +141,13 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
     換行業、補 destination 都只是改資料,不該逼人再把憑證從 LINE Console
     複製一次,而那一步是整個導入流程裡最容易出錯的地方。
     """
+    # 只有真的要寫資料庫時才把資料庫拉進來(理由見檔頭的 import 註解)
+    from sqlalchemy import select
+
+    from app.crypto import encrypt
+    from app.database import session_scope
+    from app.models import ChatHistory, Company
+
     data = _load(industry)
     findings = validate(data)
     if [f for f in findings if f.level == "ERROR"]:
@@ -189,7 +198,19 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
                        .filter(ChatHistory.company_id == company_id)
                        .delete(synchronize_session=False))
             print(f"  已清掉 {removed} 則舊對話(--reset-history)")
-        return company_id
+        has_destination = bool(company.line_destination)
+
+    print(f"✓ 已寫入 company {company_id}(slug={slug})")
+    print(f"  webhook 路徑:/webhook/{slug}")
+    # 看資料庫的實際狀態,不是看這次有沒有帶參數 —— 上次就設好的公司再
+    # seed 一次(例如只是換行業)不該還被警告防線是關的,那是謊話。
+    if not has_destination:
+        # 安靜地少一道防線,比明講出來危險得多。
+        print("⚠ 沒有設定 destination,destination 交叉比對是關著的。")
+        print("  取得方式:用這家公司的 access token 打")
+        print("  GET https://api.line.me/v2/bot/info,回應裡的 userId 就是。")
+        print("  再跑一次 seed 加上 --destination <那串> 即可,不必再給憑證。")
+    return company_id
 
 
 def _ensure_utf8_stdout() -> None:
@@ -244,23 +265,11 @@ def main(argv=None) -> int:
     if args.cmd == "validate":
         return 1 if _report(run_validate(args.industry)) else 0
 
-    cid = run_seed(args.industry, slug=args.slug,
-                   channel_secret=args.channel_secret,
-                   channel_token=args.channel_token,
-                   destination=args.destination,
-                   reset_history=args.reset_history)
-    print(f"✓ 已寫入 company {cid}(slug={args.slug})")
-    print(f"  webhook 路徑:/webhook/{args.slug}")
-    # 看資料庫的實際狀態,不是看這次有沒有帶參數 —— 上次就設好的公司
-    # 再 seed 一次(例如只是換行業)不該還被警告防線是關的,那是謊話。
-    with session_scope() as db:
-        has_destination = bool(db.get(Company, cid).line_destination)
-    if not has_destination:
-        # 安靜地少一道防線,比明講出來危險得多。
-        print("⚠ 沒有設定 destination,destination 交叉比對是關著的。")
-        print("  取得方式:用這家公司的 access token 打")
-        print("  GET https://api.line.me/v2/bot/info,回應裡的 userId 就是。")
-        print("  再跑一次 seed 加上 --destination <那串> 即可,不必再給憑證。")
+    run_seed(args.industry, slug=args.slug,
+             channel_secret=args.channel_secret,
+             channel_token=args.channel_token,
+             destination=args.destination,
+             reset_history=args.reset_history)
     return 0
 
 

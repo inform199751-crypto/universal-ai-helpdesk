@@ -304,3 +304,31 @@ def test_main_list_prints_the_folder_name_and_the_company_name(capsys):
     out = capsys.readouterr().out
     assert "restaurant" in out and "微醺之夜 Bistro" in out
     assert "clinic" in out and "晴日皮膚科診所" in out
+
+
+def test_validate_and_list_run_without_any_credentials(tmp_path):
+    """validate 與 list 只讀 industries/ 底下的 YAML,不碰資料庫、不呼叫 LLM。
+
+    但 app/cli.py 在模組層 import 了 app.database,而 app/database.py 在
+    import 時就 get_settings() —— 於是這兩道指令變成「要先產一把 Fernet
+    金鑰、先辦一個 OpenRouter 帳號」才跑得起來。順序是反的:validate 是
+    導入現場第一個會跑的東西,那時候還沒有任何憑證。
+
+    用子行程 + 洗掉環境變數 + 換到沒有 .env 的工作目錄來重現 —— 本行程
+    的 conftest 早就把那些變數設好了,在行程內測不出這件事。
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("FERNET_KEY", "OPENROUTER_API_KEY", "DATABASE_URL")}
+    env["PYTHONIOENCODING"] = "utf-8"
+    root = Path(__file__).resolve().parents[1]
+
+    for args in (["validate", "--industry", "restaurant"], ["list"]):
+        r = subprocess.run([sys.executable, "-m", "app.cli", *args],
+                           cwd=tmp_path, env=env, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        assert r.returncode == 0, f"{args} 失敗:\n{r.stderr[-800:]}"
