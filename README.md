@@ -8,11 +8,11 @@
 ### 導入時:資料進系統(一家企業只做一次)
 
 ```mermaid
-flowchart LR
+flowchart TD
     Y["industries 資料夾<br/>五份 YAML<br/>company · faq · policies<br/>escalation · glossary"]
     V{"validate<br/>八條規則"}
-    E["ERROR<br/>資料壞了,擋下不寫入"]
-    B["BLOCK<br/>不擋,列為導入會議議程"]
+    E["ERROR — 資料壞了<br/>擋下,不寫入資料庫"]
+    B["BLOCK — 不擋<br/>列為導入會議議程"]
     J["Jinja2<br/>組成 system_prompt"]
     D[("companies<br/>一列 = 一家企業<br/>= 一個 LINE 官方帳號")]
 
