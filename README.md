@@ -48,11 +48,11 @@ pip install -e ".[dev]"
 cp .env.example .env        # 填 FERNET_KEY 與 OPENROUTER_API_KEY
 alembic upgrade head
 python -m app.cli seed --industry restaurant --slug bistro     --channel-secret <LINE Channel Secret> --channel-token <LINE Access Token>
-python scripts/dev.py       # 起服務 + Cloudflare Tunnel,網址會印在畫面上
+python scripts/dev.py --slug bistro   # 起服務 + Tunnel,並自動寫回 LINE Console
 ```
 
-把印出來的 `https://xxx.trycloudflare.com/webhook/bistro` 填進 LINE Developers
-Console 的 Webhook URL,按 Verify,就完成了。
+Quick Tunnel 的網址每次重啟都會變,`--slug` 會讓腳本自己把當次的網址 PUT 回
+LINE,不必手動貼、也不必按 Verify。不帶 `--slug` 就只印網址,自己去填。
 
 Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 

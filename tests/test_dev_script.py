@@ -69,6 +69,54 @@ def test_missing_cloudflared_never_starts_the_api(monkeypatch, capsys):
     monkeypatch.setattr(dev, "find_cloudflared", lambda: None)
     monkeypatch.setattr(dev.subprocess, "Popen",
                         lambda *a, **kw: started.append(a) or None)
-    assert dev.main() == 1
+    assert dev.main([]) == 1
     assert started == []
     assert "winget install" in capsys.readouterr().err
+
+
+class _Tunnel:
+    def __init__(self, url="https://abc-def-123.trycloudflare.com"):
+        self.stderr = iter([f"INF {url}\n"])
+
+
+def test_registers_the_webhook_with_line_when_a_slug_is_given(monkeypatch, capsys):
+    """忘了更新 Console 的症狀是 530,長得完全不像「網址過期」。
+    網址已經在手上了,寫回去只是一行 API —— 不該留給人在面試前十分鐘手動做。"""
+    seen = {}
+
+    def fake_register(slug, webhook_url):
+        seen["slug"] = slug
+        seen["url"] = webhook_url
+        return "已自動寫回"
+
+    monkeypatch.setattr(dev, "_register_webhook", fake_register)
+    dev._watch_tunnel(_Tunnel(), slug="bistro")
+
+    assert seen == {"slug": "bistro",
+                    "url": "https://abc-def-123.trycloudflare.com/webhook/bistro"}
+    assert "已自動寫回" in capsys.readouterr().out
+
+
+def test_does_not_touch_line_without_a_slug(monkeypatch, capsys):
+    """不帶 --slug 就一個 API 都不能打 —— 這支腳本不該在沒被要求時
+    去改別人 LINE 帳號的設定。"""
+    called = []
+    monkeypatch.setattr(dev, "_register_webhook",
+                        lambda *a, **kw: called.append(a) or "")
+    dev._watch_tunnel(_Tunnel())
+    assert called == []
+    assert "--slug" in capsys.readouterr().out
+
+
+def test_registration_failure_still_prints_the_url(monkeypatch, capsys):
+    """自動更新是便利功能。它炸掉不能讓 tunnel 監看整個停掉 ——
+    那樣連網址都印不出來,比沒有這個功能還糟,而且人完全不知道發生什麼事。"""
+    def boom(slug, url):
+        raise RuntimeError("資料庫連不上")
+
+    monkeypatch.setattr(dev, "_register_webhook", boom)
+    dev._watch_tunnel(_Tunnel(), slug="bistro")
+
+    out = capsys.readouterr().out
+    assert "https://abc-def-123.trycloudflare.com/webhook/bistro" in out
+    assert "請手動貼上" in out and "資料庫連不上" in out

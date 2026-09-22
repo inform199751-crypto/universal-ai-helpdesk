@@ -13,12 +13,16 @@ Quick Tunnel 的網址每次重啟都會變,所以這份清單每次 demo 前都
 
 ## 現場(面試前十分鐘)
 
-- [ ] `python scripts/dev.py`
-- [ ] 抄下印出來的 `https://xxx.trycloudflare.com`
-- [ ] `curl <網址>/health` 回 `{"status":"ok"}`
-- [ ] LINE Console → Webhook URL 改成 `<網址>/webhook/<slug>`
-- [ ] 按 **Verify**,要 Success
+- [ ] `python scripts/dev.py --slug bistro`
+- [ ] 等等號框印出「已自動寫回 LINE Console」
 - [ ] **自己先傳一則訊息**,確認有回 —— 不要讓面試官當第一個測試者
+
+`--slug` 會讓腳本自己把當次的 tunnel 網址 PUT 回 LINE,不必抄網址、
+不必開 Console、不必按 Verify。**忘了更新的症狀是 530,而 530 長得
+完全不像「網址過期」** —— 這一步自動化掉的價值就在這裡。
+
+框裡如果印的是「請手動貼上」,才需要回到舊流程:複製那串 webhook 網址、
+貼進 Console → Messaging API → Webhook URL、按 Verify。
 
 ## 第一次串接才要做的(之後不用重做)
 
@@ -60,7 +64,7 @@ python -m app.cli seed --industry clinic --slug bistro \
 ## 如果當場壞掉
 
 1. 先看 `scripts/dev.py` 的終端機,錯誤會印在那裡
-2. 網址變了沒?→ 重貼 Console、重按 Verify
+2. LINE 說 **530**?→ tunnel 斷了或網址換了。重跑 `--slug` 那道指令就會自己接回去
 3. 電腦的網路換了沒?(會議室 Wi-Fi 換了,tunnel 要重開)
 4. 都不行 → 講設計文件。**第二節決策紀錄與第六節的坑本身就是面試素材**,
    東西沒跑起來不代表沒東西可談

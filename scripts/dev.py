@@ -1,14 +1,16 @@
 """同時起 FastAPI 與 cloudflared,並把當次的公開網址印大一點。
 
-    python scripts/dev.py
+    python scripts/dev.py                 # 只起服務,自己去填 webhook 網址
+    python scripts/dev.py --slug bistro   # 起完自動把網址寫回 LINE Console
 
-Quick Tunnel 的網址每次重啟都會變,而 LINE 的 webhook 網址是填在
-Console 裡的 —— 所以這支腳本唯一重要的事,就是讓你一眼看到網址,
-不必去 log 裡撈。
+Quick Tunnel 的網址每次重啟都會變,而 LINE 的 webhook 網址是填在 Console
+裡的 —— 忘了更新的症狀是 530,長得完全不像「網址過期」。帶 --slug 就讓
+這支腳本自己用該公司的 access token 把新網址 PUT 回去,重開幾次都無所謂。
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import shutil
@@ -32,6 +34,8 @@ CLOUDFLARED_MISSING = (
     "裝完要重開一個終端機,PATH 才會更新。"
 )
 
+LINE_ENDPOINT_API = "https://api.line.me/v2/bot/channel/webhook/endpoint"
+
 
 def find_cloudflared() -> str | None:
     """先查 PATH,再查已知的安裝位置。
@@ -50,19 +54,65 @@ def find_cloudflared() -> str | None:
     return None
 
 
-def _watch_tunnel(proc) -> None:
+def _register_webhook(slug: str, webhook_url: str) -> str:
+    """把當次的 tunnel 網址寫回 LINE Console,回傳一句要印給人看的話。
+
+    app.* 是在函式裡才 import 的:不帶 --slug 的人不需要資料庫連得上、
+    也不需要 .env 填好就能起服務,而這支腳本的價值就在於少一個出錯點。
+
+    任何失敗都只回一句話,不往外丟 —— 自動更新失敗只是「要自己去貼」,
+    不該連服務都起不來。
+    """
+    import httpx
+
+    from app.crypto import decrypt
+    from app.database import session_scope
+    from app.models import Company
+    from sqlalchemy import select
+
+    with session_scope() as db:
+        company = db.scalar(select(Company).where(Company.slug == slug))
+        if company is None:
+            return f"找不到 slug「{slug}」,沒有自動更新。先跑一次 app.cli seed。"
+        token = decrypt(company.line_channel_token_enc)
+
+    r = httpx.put(LINE_ENDPOINT_API, json={"endpoint": webhook_url},
+                  headers={"Authorization": f"Bearer {token}"}, timeout=20)
+    if r.status_code != 200:
+        return f"自動更新失敗(HTTP {r.status_code}:{r.text[:200]}),請手動貼上。"
+    return "已自動寫回 LINE Console,不必手動貼、也不必按 Verify。"
+
+
+def _watch_tunnel(proc, slug: str | None = None) -> None:
     for line in proc.stderr:  # cloudflared 把網址印在 stderr
         sys.stderr.write(line)
         m = URL_RE.search(line)
-        if m:
-            url = m.group(0)
-            bar = "=" * 72
-            print(f"\n{bar}\n  公開網址:{url}"
-                  f"\n  LINE webhook 請填:{url}/webhook/<你的 slug>"
-                  f"\n  填完記得按 Verify\n{bar}\n", flush=True)
+        if not m:
+            continue
+        url = m.group(0)
+        webhook = f"{url}/webhook/{slug}" if slug else f"{url}/webhook/<你的 slug>"
+        note = ""
+        if slug:
+            try:
+                note = _register_webhook(slug, webhook)
+            except Exception as exc:  # noqa: BLE001
+                # 自動更新是便利功能,炸掉不能讓 tunnel 監看整個停掉 ——
+                # 那樣連網址都印不出來,比沒有這個功能還糟。
+                note = f"自動更新出錯({type(exc).__name__}: {exc}),請手動貼上。"
+        else:
+            note = "沒帶 --slug,要自己把上面那串填進 Console 並按 Verify。"
+        bar = "=" * 72
+        print(f"\n{bar}\n  公開網址:{url}"
+              f"\n  LINE webhook:{webhook}"
+              f"\n  {note}\n{bar}\n", flush=True)
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="scripts/dev.py")
+    parser.add_argument("--slug",
+                        help="帶了就自動把當次的 tunnel 網址寫回 LINE Console。")
+    args = parser.parse_args(argv)
+
     # 先確認 cloudflared 在,再起 uvicorn。順序相反的話,這裡失敗就會留下
     # 一個沒人管的 uvicorn 佔著 8000,下次重跑的症狀是「服務連不上、埠卻
     # 被佔住」—— 而這支腳本存在的場合正是面試前十分鐘。
@@ -85,7 +135,8 @@ def main() -> int:
         print(f"cloudflared 在 {exe} 但起不來:{exc}", file=sys.stderr)
         return 1
 
-    threading.Thread(target=_watch_tunnel, args=(tunnel,), daemon=True).start()
+    threading.Thread(target=_watch_tunnel, args=(tunnel, args.slug),
+                     daemon=True).start()
     try:
         api.wait()
     except KeyboardInterrupt:
