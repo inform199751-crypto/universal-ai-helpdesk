@@ -114,6 +114,7 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 - 傳圖片回固定話術,不浪費一次 LLM 呼叫
 - 上游模型滿載時自動換一個模型重試,客人不會看到錯誤訊息
 
+- **專題報告(先看這份):[docs/report.md](docs/report.md)**
 - 實作計畫:[docs/superpowers/plans/2026-09-21-helpdesk-v1.md](docs/superpowers/plans/2026-09-21-helpdesk-v1.md)
 - 系統設計:[docs/superpowers/specs/2026-09-21-design.md](docs/superpowers/specs/2026-09-21-design.md)
 - 資料庫設計:[docs/superpowers/specs/2026-09-21-schema-draft.md](docs/superpowers/specs/2026-09-21-schema-draft.md)
