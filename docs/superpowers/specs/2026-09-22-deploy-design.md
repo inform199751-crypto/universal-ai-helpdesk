@@ -277,7 +277,8 @@ auth key 最長 90 天,但節點註冊完就不再需要它(身分在 volume 裡
 
 | 檔案 | 做什麼 |
 |---|---|
-| `Dockerfile` | `python:3.13-slim`,`pip install .`,entrypoint 先 `alembic upgrade head` 再起 uvicorn |
+| `Dockerfile` | `python:3.13-slim`,`pip install .` |
+| `docker-entrypoint.sh` | 先 `alembic upgrade head` 再 `exec uvicorn`。獨立成檔而不是塞進 `CMD`,是為了讓那兩步各自印一行看得懂的標題 —— 容器起不來時,光看 log 停在哪一行就知道是 migration 卡住還是服務卡住 |
 | `compose.yaml` | 三個服務 |
 | `.dockerignore` | 見第七節 |
 | `deploy/funnel.json` | Tailscale serve config |
