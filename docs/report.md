@@ -138,6 +138,8 @@ Enum 用 `native_enum=False`、時間欄位一律存 UTC。SQLite 還要用 conn
 
 ![換行業](media/switch-industry.gif)
 
+<img src="media/three-industries.jpg" width="360" alt="一個對話串裡的三個行業">
+
 上面這段錄影裡,中間唯一執行的指令是
 `python -m app.cli seed --industry clinic --slug bistro --reset-history`。
 沒有重啟服務,也沒有動 LINE Console 的任何設定。
