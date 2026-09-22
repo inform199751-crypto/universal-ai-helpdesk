@@ -9,18 +9,45 @@ Console 裡的 —— 所以這支腳本唯一重要的事,就是讓你一眼看
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 
 PORT = 8000
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+# winget 的預設安裝位置。PATH 查不到時的第二順位。
+CLOUDFLARED_FALLBACKS = (
+    r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
+    r"C:\Program Files\cloudflared\cloudflared.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links\cloudflared.exe"),
+)
+
 CLOUDFLARED_MISSING = (
-    "找不到 cloudflared。先安裝再跑這支腳本:\n"
+    "找不到 cloudflared,PATH 與已知的安裝位置都沒有。\n"
     "    winget install --id Cloudflare.cloudflared\n"
     "裝完要重開一個終端機,PATH 才會更新。"
 )
+
+
+def find_cloudflared() -> str | None:
+    """先查 PATH,再查已知的安裝位置。
+
+    winget 裝完只更新登錄檔裡的 PATH,**已經在執行的行程,以及它們之後
+    開出來的子行程,拿到的都還是舊的環境變數**。所以會出現「明明裝好了卻
+    說找不到命令」—— 而那句話會把人導去重裝,查不到真正原因。
+    這裡多看一眼安裝位置,就不必要求使用者理解 Windows 的 PATH 傳播規則。
+    """
+    found = shutil.which("cloudflared")
+    if found:
+        return found
+    for path in CLOUDFLARED_FALLBACKS:
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def _watch_tunnel(proc) -> None:
@@ -36,21 +63,26 @@ def _watch_tunnel(proc) -> None:
 
 
 def main() -> int:
+    # 先確認 cloudflared 在,再起 uvicorn。順序相反的話,這裡失敗就會留下
+    # 一個沒人管的 uvicorn 佔著 8000,下次重跑的症狀是「服務連不上、埠卻
+    # 被佔住」—— 而這支腳本存在的場合正是面試前十分鐘。
+    exe = find_cloudflared()
+    if exe is None:
+        print(CLOUDFLARED_MISSING, file=sys.stderr)
+        return 1
+
     api = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(PORT)]
     )
     try:
         tunnel = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://localhost:{PORT}"],
+            [exe, "tunnel", "--url", f"http://localhost:{PORT}"],
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
         )
-    except OSError:
-        # 沒有這段的話,uvicorn 會變成沒人管的孤兒行程繼續佔著 8000,
-        # 下一次重跑就變成「服務連不上、埠卻被佔住」—— 而這支腳本存在的
-        # 場合正是面試前十分鐘,那是最不該花時間查這種事的十分鐘。
+    except OSError as exc:
         api.terminate()
         api.wait()
-        print(CLOUDFLARED_MISSING, file=sys.stderr)
+        print(f"cloudflared 在 {exe} 但起不來:{exc}", file=sys.stderr)
         return 1
 
     threading.Thread(target=_watch_tunnel, args=(tunnel,), daemon=True).start()

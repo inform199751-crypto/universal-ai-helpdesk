@@ -41,25 +41,34 @@ def test_banner_spells_out_the_webhook_url(capsys):
     assert "https://abc-def-123.trycloudflare.com/webhook/" in capsys.readouterr().out
 
 
-def test_missing_cloudflared_does_not_leave_the_api_orphaned(monkeypatch, capsys):
-    """cloudflared 沒裝時,uvicorn 已經起來了。不收掉它,8000 埠會被一個
-    沒人管的行程佔住,下一次重跑的症狀是「連不上但埠被佔」—— 指不到真正原因。"""
-    events = []
+def test_prefers_cloudflared_from_path(monkeypatch):
+    monkeypatch.setattr(dev.shutil, "which", lambda name: r"C:\somewhere\cloudflared.exe")
+    assert dev.find_cloudflared() == r"C:\somewhere\cloudflared.exe"
 
-    class FakeApi:
-        def terminate(self):
-            events.append("terminate")
 
-        def wait(self, *args, **kwargs):
-            events.append("wait")
-            return 0
+def test_falls_back_to_install_location_when_path_is_stale(monkeypatch):
+    """真實踩過的坑:winget 裝完只更新登錄檔的 PATH,已經在執行的行程
+    (以及它們開出來的子行程)拿到的還是舊的環境變數。結果是「明明裝好了
+    卻說找不到命令」,而那句話會把人導去重裝。"""
+    monkeypatch.setattr(dev.shutil, "which", lambda name: None)
+    winget_default = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"
+    monkeypatch.setattr(dev.os.path, "isfile", lambda p: p == winget_default)
+    assert dev.find_cloudflared() == winget_default
 
-    def fake_popen(cmd, **kwargs):
-        if cmd[0] == "cloudflared":
-            raise FileNotFoundError(2, "no such file", "cloudflared")
-        return FakeApi()
 
-    monkeypatch.setattr(dev.subprocess, "Popen", fake_popen)
+def test_returns_none_when_really_not_installed(monkeypatch):
+    monkeypatch.setattr(dev.shutil, "which", lambda name: None)
+    monkeypatch.setattr(dev.os.path, "isfile", lambda p: False)
+    assert dev.find_cloudflared() is None
+
+
+def test_missing_cloudflared_never_starts_the_api(monkeypatch, capsys):
+    """找不到就不要先起 uvicorn —— 起了又收不乾淨,8000 埠會被一個沒人管的
+    行程佔住,下次重跑的症狀是「連不上但埠被佔」,指不到真正原因。"""
+    started = []
+    monkeypatch.setattr(dev, "find_cloudflared", lambda: None)
+    monkeypatch.setattr(dev.subprocess, "Popen",
+                        lambda *a, **kw: started.append(a) or None)
     assert dev.main() == 1
-    assert events == ["terminate", "wait"]
+    assert started == []
     assert "winget install" in capsys.readouterr().err
