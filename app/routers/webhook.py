@@ -58,6 +58,12 @@ async def line_webhook(slug: str, request: Request, background: BackgroundTasks)
     destination = body.get("destination")
     if expected_destination and destination and destination != expected_destination:
         raise HTTPException(status_code=401, detail="destination mismatch")
+    if not expected_destination:
+        # 這家公司 seed 時沒帶 --destination,所以上面那道比對是關著的。
+        # 把收到的值印出來,才有辦法補進資料庫把防線打開。
+        logger.info("%s 尚未設定 destination,本次收到的是 %s ——"
+                    " 用 --destination %s 重跑一次 seed 即可開啟交叉比對",
+                    slug, destination, destination)
 
     # 5. 排程背景工作後立刻回 200(Console 按 Verify 時 events 是空的)
     for event in body.get("events") or []:

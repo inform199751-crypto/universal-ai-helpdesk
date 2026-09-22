@@ -101,3 +101,36 @@ def test_main_validate_smoke_survives_non_utf8_stdout(monkeypatch):
     printed = fake_stdout.buffer.getvalue().decode("utf-8")
     assert rc == 0
     assert printed.strip()
+
+
+def test_seed_stores_destination_when_given():
+    """destination 是 bot 自己的 userId。router 拿它跟 webhook body 交叉比對:
+    路徑說是 A 公司、body 的 destination 卻是 B 公司的 bot,就拒絕(決策 2)。"""
+    cid = run_seed("restaurant", slug="bistro", channel_secret="s",
+                   channel_token="t", destination="Ubot0001")
+    with session_scope() as db:
+        assert db.get(Company, cid).line_destination == "Ubot0001"
+
+
+def test_seed_strips_destination():
+    """Global Constraint 3。destination 是拿去逐字元比對的,貼上時黏到尾端
+    換行,結果不是報錯而是「每一則訊息都被判成 destination 不符」——
+    官方帳號整個啞掉,而錯誤訊息指不到真正原因。"""
+    cid = run_seed("restaurant", slug="bistro", channel_secret="s",
+                   channel_token="t", destination="  Ubot0001\n")
+    with session_scope() as db:
+        assert db.get(Company, cid).line_destination == "Ubot0001"
+
+
+def test_seed_without_destination_warns_that_the_check_is_off(capsys):
+    """不帶 --destination 是合法的 —— 第一次串接時還拿不到 bot 的 userId。
+
+    但 router 的交叉比對寫的是 `if expected_destination and ...`,欄位是
+    NULL 就整條靜靜跳過。安靜地少一道防線,比明講出來危險得多,所以這裡
+    必須印出警告。
+    """
+    rc = main(["seed", "--industry", "restaurant", "--slug", "bistro",
+               "--channel-secret", "s", "--channel-token", "t"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "destination" in out and "--destination" in out

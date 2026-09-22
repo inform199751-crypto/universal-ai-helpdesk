@@ -49,7 +49,7 @@ def _report(findings: list[Finding]) -> int:
 
 
 def run_seed(industry: str, *, slug: str, channel_secret: str,
-             channel_token: str) -> str:
+             channel_token: str, destination: str | None = None) -> str:
     data = _load(industry)
     findings = validate(data)
     if [f for f in findings if f.level == "ERROR"]:
@@ -69,6 +69,13 @@ def run_seed(industry: str, *, slug: str, channel_secret: str,
         company.vector_collection = f"kb_{slug}"
         company.line_channel_secret_enc = encrypt(channel_secret)
         company.line_channel_token_enc = encrypt(channel_token)
+        # destination 是 bot 自己的 userId(決策 2:路徑說是 A 公司、body 的
+        # destination 卻是 B 公司的 bot,就拒絕)。第一次串接時還拿不到,
+        # 所以允許不帶 —— 但不帶就等於那道防線是關著的,main() 會警告。
+        # 只在有值時覆寫:重跑 seed 更新 FAQ 時沒帶這個參數,不該把已經
+        # 設好的值清掉。
+        if destination:
+            company.line_destination = destination.strip()
         db.flush()
         return company.id
 
@@ -106,6 +113,8 @@ def main(argv=None) -> int:
     s.add_argument("--slug", required=True)
     s.add_argument("--channel-secret", required=True)
     s.add_argument("--channel-token", required=True)
+    s.add_argument("--destination",
+                   help="bot 自己的 userId。不帶就不做 destination 交叉比對。")
 
     args = parser.parse_args(argv)
     if args.cmd == "validate":
@@ -113,9 +122,15 @@ def main(argv=None) -> int:
 
     cid = run_seed(args.industry, slug=args.slug,
                    channel_secret=args.channel_secret,
-                   channel_token=args.channel_token)
+                   channel_token=args.channel_token,
+                   destination=args.destination)
     print(f"✓ 已寫入 company {cid}(slug={args.slug})")
     print(f"  webhook 路徑:/webhook/{args.slug}")
+    if not args.destination:
+        # 安靜地少一道防線,比明講出來危險得多。
+        print("⚠ 沒有帶 --destination,destination 交叉比對是關著的。")
+        print("  取得方式:先接上 webhook 讓官方帳號收一則訊息,伺服器 log 會印出")
+        print("  收到的 destination,再用同一道指令加上 --destination 重跑一次。")
     return 0
 
 
