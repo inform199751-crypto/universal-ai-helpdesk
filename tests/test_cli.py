@@ -6,7 +6,13 @@ import pytest
 from app.cli import main, run_seed, run_validate
 from app.crypto import decrypt
 from app.database import Base, engine, session_scope
-from app.models import Company
+from app.models import ChatHistory, ChatRole, Company, User
+
+# 用真實形狀的假憑證。以前這裡寫的是 "s" / "t" —— 那種值在真實世界不可能
+# 存在,所以「1 個字元的 secret 被照單全收」這個 bug 就躲在全綠的測試後面,
+# 一路躲到真的接上 LINE 才爆。
+SECRET = "0123456789abcdef0123456789abcdef"   # channel secret:32 位十六進位
+TOKEN = "T" + "k" * 171                        # 長期 access token 約 172 字元
 
 
 @pytest.fixture(autouse=True)
@@ -23,18 +29,18 @@ def test_restaurant_industry_has_no_errors():
 
 def test_seed_creates_company_with_encrypted_credentials():
     cid = run_seed("restaurant", slug="bistro",
-                   channel_secret="s3cret", channel_token="t0ken")
+                   channel_secret=SECRET, channel_token=TOKEN)
     with session_scope() as db:
         c = db.get(Company, cid)
         assert c.slug == "bistro"
         assert c.system_prompt  # 不是空字串
-        assert decrypt(c.line_channel_secret_enc) == "s3cret"
+        assert decrypt(c.line_channel_secret_enc) == SECRET
 
 
 def test_seed_is_idempotent_on_same_slug():
     """重跑 seed 應該更新同一列,不是新增一列 —— 否則改個 FAQ 就多一家公司。"""
-    a = run_seed("restaurant", slug="bistro", channel_secret="s", channel_token="t")
-    b = run_seed("restaurant", slug="bistro", channel_secret="s", channel_token="t")
+    a = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    b = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
     assert a == b
     with session_scope() as db:
         assert db.query(Company).count() == 1
@@ -45,8 +51,8 @@ def test_seed_creates_separate_company_for_different_slug():
     也會矇混過關(全表本來就只有一列)。這裡用兩個不同的 slug 各 seed 一次,
     確認 upsert 真的是以 slug 為鍵——用同一個 slug 才更新,不同 slug 要各自成列。
     """
-    a = run_seed("restaurant", slug="bistro-a", channel_secret="s", channel_token="t")
-    b = run_seed("restaurant", slug="bistro-b", channel_secret="s", channel_token="t")
+    a = run_seed("restaurant", slug="bistro-a", channel_secret=SECRET, channel_token=TOKEN)
+    b = run_seed("restaurant", slug="bistro-b", channel_secret=SECRET, channel_token=TOKEN)
     assert a != b
     with session_scope() as db:
         assert db.query(Company).count() == 2
@@ -73,7 +79,7 @@ def test_seed_refuses_and_writes_nothing_when_validate_reports_errors(monkeypatc
     monkeypatch.setattr("app.cli._load", lambda industry: bad_data)
 
     with pytest.raises(SystemExit):
-        run_seed("restaurant", slug="broken", channel_secret="s", channel_token="t")
+        run_seed("restaurant", slug="broken", channel_secret=SECRET, channel_token=TOKEN)
 
     with session_scope() as db:
         assert db.query(Company).count() == 0
@@ -106,8 +112,8 @@ def test_main_validate_smoke_survives_non_utf8_stdout(monkeypatch):
 def test_seed_stores_destination_when_given():
     """destination 是 bot 自己的 userId。router 拿它跟 webhook body 交叉比對:
     路徑說是 A 公司、body 的 destination 卻是 B 公司的 bot,就拒絕(決策 2)。"""
-    cid = run_seed("restaurant", slug="bistro", channel_secret="s",
-                   channel_token="t", destination="Ubot0001")
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET,
+                   channel_token=TOKEN, destination="Ubot0001")
     with session_scope() as db:
         assert db.get(Company, cid).line_destination == "Ubot0001"
 
@@ -116,8 +122,8 @@ def test_seed_strips_destination():
     """Global Constraint 3。destination 是拿去逐字元比對的,貼上時黏到尾端
     換行,結果不是報錯而是「每一則訊息都被判成 destination 不符」——
     官方帳號整個啞掉,而錯誤訊息指不到真正原因。"""
-    cid = run_seed("restaurant", slug="bistro", channel_secret="s",
-                   channel_token="t", destination="  Ubot0001\n")
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET,
+                   channel_token=TOKEN, destination="  Ubot0001\n")
     with session_scope() as db:
         assert db.get(Company, cid).line_destination == "Ubot0001"
 
@@ -130,7 +136,135 @@ def test_seed_without_destination_warns_that_the_check_is_off(capsys):
     必須印出警告。
     """
     rc = main(["seed", "--industry", "restaurant", "--slug", "bistro",
-               "--channel-secret", "s", "--channel-token", "t"])
+               "--channel-secret", SECRET, "--channel-token", TOKEN])
     assert rc == 0
     out = capsys.readouterr().out
     assert "destination" in out and "--destination" in out
+
+
+def _add_history(company_id: str, line_user_id: str, n: int = 2) -> None:
+    with session_scope() as db:
+        user = User(company_id=company_id, line_user_id=line_user_id)
+        db.add(user)
+        db.flush()
+        for i in range(n):
+            db.add(ChatHistory(company_id=company_id, user_id=user.id,
+                               role=ChatRole.USER, content=f"訊息{i}",
+                               line_message_id=f"{line_user_id}-{i}"))
+
+
+def test_seed_rejects_a_one_character_channel_secret():
+    """真實踩過的坑。在 PowerShell 主控台按 Ctrl+V 不是貼上,是塞進一個
+    字面上的控制字元 ^V,於是 secret 變成 1 個字元 —— 而 run_seed 照單全收、
+    加密、寫進資料庫,完全不報錯。症狀要到 LINE Console 按 Verify 回 401
+    才出現,那時人會去查 webhook 網址,查不到真正原因。"""
+    with pytest.raises(SystemExit):
+        run_seed("restaurant", slug="bistro", channel_secret="\x16",
+                 channel_token=TOKEN)
+    with session_scope() as db:
+        assert db.query(Company).count() == 0
+
+
+def test_seed_rejects_a_channel_secret_that_is_not_hex():
+    with pytest.raises(SystemExit):
+        run_seed("restaurant", slug="bistro", channel_secret="z" * 32,
+                 channel_token=TOKEN)
+
+
+def test_seed_rejects_a_too_short_channel_token():
+    with pytest.raises(SystemExit):
+        run_seed("restaurant", slug="bistro", channel_secret=SECRET,
+                 channel_token="too-short")
+    with session_scope() as db:
+        assert db.query(Company).count() == 0
+
+
+def test_seed_strips_credentials():
+    """Global Constraint 3。從網頁複製很容易連尾端換行一起帶走,而含換行的
+    HTTP 標頭會被整個丟掉 —— 上游只會回「Missing Authentication header」,
+    完全指不到真正原因。"""
+    cid = run_seed("restaurant", slug="bistro",
+                   channel_secret=f"  {SECRET}\n", channel_token=f"{TOKEN}\r\n")
+    with session_scope() as db:
+        c = db.get(Company, cid)
+        assert decrypt(c.line_channel_secret_enc) == SECRET
+        assert decrypt(c.line_channel_token_enc) == TOKEN
+
+
+def test_updating_an_existing_company_does_not_require_credentials():
+    """改店名、換行業、補 destination 都只是改資料,不該逼人再把憑證從
+    LINE Console 複製一次 —— 那一步正是整個導入流程裡最容易出錯的地方。"""
+    cid = run_seed("restaurant", slug="bistro",
+                   channel_secret=SECRET, channel_token=TOKEN)
+    again = run_seed("clinic", slug="bistro")
+    assert again == cid
+    with session_scope() as db:
+        c = db.get(Company, cid)
+        assert c.industry == "clinic"
+        assert decrypt(c.line_channel_secret_enc) == SECRET
+        assert decrypt(c.line_channel_token_enc) == TOKEN
+
+
+def test_switching_industry_rewrites_the_system_prompt():
+    """這個專案的主張就是這條:換行業只換資料夾,程式碼一個字不動。"""
+    cid = run_seed("restaurant", slug="bistro",
+                   channel_secret=SECRET, channel_token=TOKEN)
+    with session_scope() as db:
+        before = db.get(Company, cid).system_prompt
+    run_seed("clinic", slug="bistro")
+    with session_scope() as db:
+        after = db.get(Company, cid).system_prompt
+    assert "微醺之夜" in before and "微醺之夜" not in after
+    assert "晴日皮膚科" in after
+
+
+def test_creating_a_new_company_still_requires_both_credentials():
+    """省略只對「已存在的公司」成立。新公司沒有憑證,就只是一列永遠收不到
+    訊息的死資料 —— 而且要在寫入之前就擋下,不是寫完才發現。"""
+    with pytest.raises(SystemExit):
+        run_seed("restaurant", slug="brand-new")
+    with session_scope() as db:
+        assert db.query(Company).count() == 0
+
+
+def test_the_missing_credential_error_names_which_one_is_missing():
+    with pytest.raises(SystemExit) as exc:
+        run_seed("restaurant", slug="brand-new", channel_secret=SECRET)
+    assert "--channel-token" in str(exc.value)
+
+
+def test_no_warning_when_the_company_already_has_a_destination(capsys):
+    """補完 destination 警告的另一半:已經設好時再 seed(例如只是換行業),
+    不可以還印「交叉比對是關著的」—— 那是謊話,會讓人以為還要再跑一次。"""
+    main(["seed", "--industry", "restaurant", "--slug", "bistro",
+          "--channel-secret", SECRET, "--channel-token", TOKEN,
+          "--destination", "Ubot0001"])
+    capsys.readouterr()
+    main(["seed", "--industry", "clinic", "--slug", "bistro"])
+    assert "交叉比對是關著的" not in capsys.readouterr().out
+
+
+def test_reset_history_clears_only_the_target_company():
+    """換行業時舊對話會留著:人設是診所、最近十則卻在講餐廳停車位,
+    模型會被帶偏。但清除必須只影響這一家 —— 多租戶系統裡誤刪別人的
+    對話紀錄是不可逆的。"""
+    a = run_seed("restaurant", slug="aa", channel_secret=SECRET, channel_token=TOKEN)
+    b = run_seed("restaurant", slug="bb", channel_secret=SECRET, channel_token=TOKEN)
+    _add_history(a, "Ua")
+    _add_history(b, "Ub")
+
+    run_seed("clinic", slug="aa", reset_history=True)
+
+    with session_scope() as db:
+        assert db.query(ChatHistory).filter(ChatHistory.company_id == a).count() == 0
+        assert db.query(ChatHistory).filter(ChatHistory.company_id == b).count() == 2
+
+
+def test_seed_keeps_history_by_default():
+    """預設不刪。重跑 seed 只是改個 FAQ 的情況遠比換行業多,
+    而刪掉的對話紀錄救不回來。"""
+    cid = run_seed("restaurant", slug="aa", channel_secret=SECRET, channel_token=TOKEN)
+    _add_history(cid, "Ua")
+    run_seed("restaurant", slug="aa")
+    with session_scope() as db:
+        assert db.query(ChatHistory).filter(ChatHistory.company_id == cid).count() == 2
