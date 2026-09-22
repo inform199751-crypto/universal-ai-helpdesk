@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject 宣告 requires-python >= 3.11。兩端都測,才不會出現
+        # 「在我的機器上是 3.13 所以沒事」這種只有別人會踩到的問題。
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安裝相依
+        run: pip install -e ".[dev]"
+
+      - name: 跑測試
+        # 測試不碰網路也不碰檔案系統上的資料庫:
+        # conftest.py 把 DATABASE_URL 設成記憶體 SQLite,對外的 HTTP
+        # 一律用 httpx.MockTransport 或 monkeypatch 擋掉。所以 CI 不需要
+        # 任何 secret,也不會因為外部服務不穩而變紅。
+        run: pytest -q
+
+      - name: 驗證每一個行業的資料
+        # 刻意用迴圈掃資料夾,不寫死三個行業的名字 —— 這個專案的主張是
+        # 「行業是參數,不是寫死的邏輯」,連 CI 都不該有一份硬編碼的清單。
+        # 加第四個行業時,這裡自然會一起驗。
+        run: |
+          for dir in industries/*/; do
+            name=$(basename "$dir")
+            echo "::group::validate $name"
+            python -m app.cli validate --industry "$name"
+            echo "::endgroup::"
+          done

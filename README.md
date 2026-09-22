@@ -1,5 +1,7 @@
 # AI 智慧客服(萬用)
 
+[![CI](https://github.com/inform199751-crypto/universal-ai-helpdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/inform199751-crypto/universal-ai-helpdesk/actions/workflows/ci.yml)
+
 > Universal AI Helpdesk — 企業把自己的資料放進一個資料夾,不改任何一行程式碼,
 > 就得到一個掛在 LINE 官方帳號上的 AI 客服。
 
