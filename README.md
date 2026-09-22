@@ -41,10 +41,28 @@ industries/<行業>/*.yaml        ← 企業帶入的資料,唯一真相來源
 
 FastAPI · SQLAlchemy · PostgreSQL / SQLite · Alembic · LINE Messaging API · OpenRouter
 
+## 怎麼跑起來
+
+```bash
+pip install -e ".[dev]"
+cp .env.example .env        # 填 FERNET_KEY 與 OPENROUTER_API_KEY
+alembic upgrade head
+python -m app.cli seed --industry restaurant --slug bistro     --channel-secret <LINE Channel Secret> --channel-token <LINE Access Token>
+python scripts/dev.py       # 起服務 + Cloudflare Tunnel,網址會印在畫面上
+```
+
+把印出來的 `https://xxx.trycloudflare.com/webhook/bistro` 填進 LINE Developers
+Console 的 Webhook URL,按 Verify,就完成了。
+
+Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
+
 ## 狀態
 
-**設計完成,尚未實作。**
+**v1 實作完成,自動測試全綠。** 尚未做的只剩「接上真的 LINE 官方帳號」那一段
+—— 需要 Messaging API channel 的憑證與一支手機,見
+[docs/demo-checklist.md](docs/demo-checklist.md)。
 
+- 實作計畫:[docs/superpowers/plans/2026-09-21-helpdesk-v1.md](docs/superpowers/plans/2026-09-21-helpdesk-v1.md)
 - 系統設計:[docs/superpowers/specs/2026-09-21-design.md](docs/superpowers/specs/2026-09-21-design.md)
 - 資料庫設計:[docs/superpowers/specs/2026-09-21-schema-draft.md](docs/superpowers/specs/2026-09-21-schema-draft.md)
 
