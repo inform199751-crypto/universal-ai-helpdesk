@@ -181,3 +181,55 @@ def test_user_row_is_created_once_per_company(sent):
 def test_health_endpoint():
     with TestClient(app) as client:
         assert client.get("/health").json()["status"] == "ok"
+
+
+def _image_body(msg_id="M9", user="U1"):
+    return json.dumps({
+        "destination": "Ubot0001",
+        "events": [{"type": "message",
+                    "message": {"type": "image", "id": msg_id},
+                    "webhookEventId": "E" + msg_id,
+                    "deliveryContext": {"isRedelivery": False},
+                    "timestamp": 1692000000000,
+                    "source": {"type": "user", "userId": user},
+                    "replyToken": "rt-" + msg_id, "mode": "active"}],
+    }).encode()
+
+
+def test_duplicate_image_only_replies_once(sent):
+    """去重是靠 line_message_id 的 unique 索引擋的(決策 6),但非文字訊息
+    原本在那一步之前就 return,整條去重被繞過。
+
+    Console 的 Webhook redelivery 是開著的 —— LINE 沒收到 2xx 會重送,
+    所以客人會連收兩次「我只看得懂文字訊息」。文字訊息不會有這個問題,
+    只有圖片、貼圖、語音、位置這些會,所以測試套件一直沒抓到。
+    """
+    with TestClient(app) as client:
+        _post(client, _image_body(msg_id="SAMEIMG"))
+        _post(client, _image_body(msg_id="SAMEIMG"))
+    assert len(sent) == 1
+
+
+def test_non_text_message_is_recorded_in_history(sent):
+    """非文字訊息原本完全不留紀錄。對一個要拿來談營運數據的系統來說,
+    「客人實際上都傳了什麼」不該是看不到的。"""
+    with TestClient(app) as client:
+        _post(client, _image_body(msg_id="IMG1"))
+    with session_scope() as db:
+        rows = db.query(ChatHistory).order_by(ChatHistory.id).all()
+        assert [r.role.value for r in rows] == ["user", "assistant"]
+        assert rows[0].content == "[圖片]"
+        assert rows[0].line_message_id == "IMG1"
+        assert "文字" in rows[1].content
+
+
+def test_a_text_message_after_an_image_still_sees_it_in_history(sent):
+    """紀錄下來的非文字訊息要進得了短期記憶 —— 客人傳了一張圖、我們說看不懂,
+    下一句接著問「那這個呢」時,模型要知道剛才發生過什麼。"""
+    with TestClient(app) as client:
+        _post(client, _image_body(msg_id="IMG2"))
+        _post(client, _body(text="那這個多少錢", msg_id="T2"))
+    with session_scope() as db:
+        contents = [r.content for r in
+                    db.query(ChatHistory).order_by(ChatHistory.id).all()]
+    assert "[圖片]" in contents

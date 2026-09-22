@@ -28,6 +28,18 @@ router = APIRouter()
 
 NON_TEXT_REPLY = "我目前只看得懂文字訊息,麻煩您用打字的跟我說 🙏"
 
+# 非文字訊息在對話紀錄裡長什麼樣子。這些字串會被當成歷史餵回給模型,
+# 所以用中文標記而不是原始的英文型別 —— 模型看得懂「[圖片]」,
+# 看到 "image" 可能會以為對話裡冒出了一個英文單字。
+NON_TEXT_LABELS = {
+    "image": "[圖片]", "sticker": "[貼圖]", "video": "[影片]",
+    "audio": "[語音]", "file": "[檔案]", "location": "[位置]",
+}
+
+
+def _label(message_type: str) -> str:
+    return NON_TEXT_LABELS.get(message_type, f"[{message_type or '未知訊息'}]")
+
 
 @router.post("/webhook/{slug}")
 async def line_webhook(slug: str, request: Request, background: BackgroundTasks):
@@ -111,20 +123,30 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 db.add(user)
                 db.flush()
 
-            if message_type != "text":
-                client.send(reply_token, line_user_id, NON_TEXT_REPLY)
-                return
-
-            # 去重交給資料庫的 unique 索引 —— 自己「先查再寫」有 race condition
-            incoming = ChatHistory(company_id=company_id, user_id=user.id,
-                                   role=ChatRole.USER, content=text,
-                                   line_message_id=line_message_id)
+            # 去重交給資料庫的 unique 索引 —— 自己「先查再寫」有 race condition。
+            # 非文字訊息也必須走這一步:原本它在這之前就 return,於是整條去重
+            # 被繞過。Console 的 Webhook redelivery 開著時,LINE 重送一張圖
+            # 客人就連收兩次「我只看得懂文字」—— 而文字訊息不會有這個問題,
+            # 所以測試套件一直沒抓到。
+            incoming = ChatHistory(
+                company_id=company_id, user_id=user.id, role=ChatRole.USER,
+                content=text if message_type == "text" else _label(message_type),
+                line_message_id=line_message_id)
             db.add(incoming)
             try:
                 db.flush()
             except IntegrityError:
                 db.rollback()
                 logger.info("重送的訊息 %s,略過", line_message_id)
+                return
+
+            if message_type != "text":
+                # 罐頭回覆也記下來,短期記憶才連得起來:客人傳了圖、我們說看不懂,
+                # 下一句「那這個多少錢」模型才知道剛才發生過什麼。
+                db.add(ChatHistory(company_id=company_id, user_id=user.id,
+                                   role=ChatRole.ASSISTANT,
+                                   content=NON_TEXT_REPLY))
+                client.send(reply_token, line_user_id, NON_TEXT_REPLY)
                 return
 
             user_pk = user.id
