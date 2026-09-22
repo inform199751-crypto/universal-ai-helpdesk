@@ -5,19 +5,54 @@
 > Universal AI Helpdesk — 企業把自己的資料放進一個資料夾,不改任何一行程式碼,
 > 就得到一個掛在 LINE 官方帳號上的 AI 客服。
 
+### 導入時:資料進系統(一家企業只做一次)
+
+```mermaid
+flowchart LR
+    Y["industries 資料夾<br/>五份 YAML<br/>company · faq · policies<br/>escalation · glossary"]
+    V{"validate<br/>八條規則"}
+    E["ERROR<br/>資料壞了,擋下不寫入"]
+    B["BLOCK<br/>不擋,列為導入會議議程"]
+    J["Jinja2<br/>組成 system_prompt"]
+    D[("companies<br/>一列 = 一家企業<br/>= 一個 LINE 官方帳號")]
+
+    Y --> V
+    V -- 有 ERROR --> E
+    V -. 有 BLOCK .-> B
+    V -- 通過 --> J
+    J --> D
 ```
-industries/<行業>/*.yaml        ← 企業帶入的資料,唯一真相來源
-        │
-        │  python -m app.cli seed --industry <行業>
-        │     ├─ validate  → ERROR 擋下 / BLOCK 列為導入議程
-        │     └─ Jinja2    → system_prompt
-        ▼
-   PostgreSQL ── companies / users / chat_histories / knowledge_documents
-        │
- LINE ──┼──► FastAPI ──► OpenRouter (LLM)
-   ▲    │   /webhook/{slug}
-   └─ reply / push
+
+### 執行時:每一則客人訊息
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客人
+    participant L as LINE 平台
+    participant W as FastAPI webhook
+    participant B as 背景任務
+    participant O as OpenRouter
+
+    C->>L: 傳一則訊息
+    L->>W: POST 帶 X-Line-Signature
+    Note over W: 用收到的原始位元組驗簽章<br/>parse 一定在驗簽之後
+    W-->>L: 200 OK,立刻回,不等 LLM
+    W->>B: 排程背景工作
+    Note over B: 去重靠 line_message_id 的 unique 索引<br/>LINE 重送也只會回答一次
+    B->>L: 叫出「正在輸入」動畫
+    B->>O: 人設 + 最近十則對話 + 這一句
+    alt 偏好模型滿載
+        O-->>B: HTTP 200,但 body 包著 error
+        B->>O: 改用 openrouter/free 重試
+    end
+    O-->>B: 答案
+    B->>L: reply 優先,失敗改 push
+    L->>C: 收到回覆
 ```
+
+**為什麼 webhook 要立刻回 200 再做事:** LINE 沒收到 2xx 就會重送,而 LLM 要跑
+三到十五秒 —— 同步等一定超時,客人會收到兩次一樣的答案。
 
 換行業 = 複製一個資料夾、改裡面的 YAML、重新 seed。**沒有任何一行 per-company 的程式碼。**
 
