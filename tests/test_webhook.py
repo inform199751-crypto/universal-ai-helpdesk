@@ -279,3 +279,29 @@ def test_loading_failure_does_not_stop_the_answer(monkeypatch):
     with TestClient(app) as client:
         assert _post(client, _body()).status_code == 200
     assert out == ["您好"]
+
+
+def test_simplified_characters_in_the_answer_are_fixed_before_sending(monkeypatch):
+    """模型混進簡體字時,客人不該看到,資料庫也不該存到。
+
+    prompt 已經規定繁體中文,但免費模型的語料大量是簡體,真機上就漂移過。
+    弱模型要靠程式兜底,不能只靠 prompt。
+    """
+    out = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: out.append(text) or True)
+    monkeypatch.setattr("app.routers.webhook.complete",
+                        lambda messages, **kw: LLMResult(
+                            "店門口有兩个停车位,滿了的話對面有收費停车場。",
+                            token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        assert _post(client, _body()).status_code == 200
+
+    assert out, "沒送出任何東西"
+    assert "车" not in out[0] and "个" not in out[0]
+    assert "停車位" in out[0]
+
+    # 資料庫存的要跟客人看到的一樣
+    with session_scope() as db:
+        stored = [r.content for r in db.query(ChatHistory).all() if r.role.value == "assistant"]
+    assert stored == out

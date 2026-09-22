@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.agent.llm import LLMError, complete
 from app.agent.prompt import build_messages
+from app.agent.zh import ensure_traditional
 from app.config import get_settings
 from app.crypto import decrypt
 from app.database import session_scope
@@ -188,6 +189,9 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             logger.warning("LLM 失敗,改送 fallback:%s", exc)
             answer, tokens, latency = fallback, None, None
 
+        # 簡繁兜底要在寫入資料庫之前 —— 對話紀錄要跟客人實際看到的一致。
+        # prompt 已經規定繁體,但那只降低漂移消不掉(真機上出現過「停车位」)。
+        answer = ensure_traditional(answer)
         answer = truncate_for_line(answer, settings.line_max_text_length)
 
         with session_scope() as db:

@@ -12,6 +12,8 @@ dependencies = [
     "jinja2>=3.1",
     "cryptography>=43",
     "PyYAML>=6.0",
+    # 簡繁轉換的兜底(純 Python,CI 上不用編譯)。理由見 app/agent/zh.py
+    "opencc-python-reimplemented>=0.1.7",
 ]
 
 [project.optional-dependencies]
