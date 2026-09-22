@@ -47,12 +47,20 @@ FastAPI · SQLAlchemy · PostgreSQL / SQLite · Alembic · LINE Messaging API ·
 pip install -e ".[dev]"
 cp .env.example .env        # 填 FERNET_KEY 與 OPENROUTER_API_KEY
 alembic upgrade head
-python -m app.cli seed --industry restaurant --slug bistro     --channel-secret <LINE Channel Secret> --channel-token <LINE Access Token>
+python -m app.cli seed --industry restaurant --slug bistro \n    --channel-secret <LINE Channel Secret> --channel-token <LINE Access Token>
 python scripts/dev.py --slug bistro   # 起服務 + Tunnel,並自動寫回 LINE Console
 ```
 
 Quick Tunnel 的網址每次重啟都會變,`--slug` 會讓腳本自己把當次的網址 PUT 回
 LINE,不必手動貼、也不必按 Verify。不帶 `--slug` 就只印網址,自己去填。
+
+換行業(不必再給憑證,也不必重啟服務):
+
+```bash
+python -m app.cli seed --industry ecommerce --slug bistro --reset-history
+python -m app.cli seed --industry clinic    --slug bistro --reset-history
+```
+
 
 Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 
