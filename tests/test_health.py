@@ -5,6 +5,7 @@
 而那正是最需要它講實話的時候。
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
@@ -14,8 +15,14 @@ from app.main import app
 client = TestClient(app)
 
 
-def test_health_is_ok_when_the_database_answers():
+@pytest.fixture(autouse=True)
+def _tables():
     Base.metadata.create_all(engine)
+    yield
+    Base.metadata.drop_all(engine)
+
+
+def test_health_is_ok_when_the_database_answers():
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["database"] == "ok"
