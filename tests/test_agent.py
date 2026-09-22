@@ -97,3 +97,82 @@ def test_request_disables_reasoning_and_sets_max_tokens():
     complete([{"role": "user", "content": "嗨"}], client=_http(handler))
     assert seen["max_tokens"] >= 1000
     assert seen["reasoning"]["exclude"] is True
+
+
+# --- 供應商滿載時換一個模型 ------------------------------------------------
+
+from app.config import get_settings  # noqa: E402
+
+_S = get_settings()
+PREFERRED = _S.openrouter_model
+FALLBACK = _S.openrouter_fallback_model
+
+
+def _overloaded():
+    """OpenRouter 轉述上游滿載的真實形狀:HTTP 200,body 裡包著 error。"""
+    return httpx.Response(200, json={"error": {
+        "message": "Upstream error from Nvidia: Service temporarily overloaded",
+        "code": 503, "metadata": {"error_type": "provider_overloaded"}}})
+
+
+def _by_model(table):
+    """依請求裡的 model 欄位分派回應。"""
+    def handler(request):
+        import json
+        model = json.loads(request.content)["model"]
+        return table[model]()
+    return handler
+
+
+def test_falls_back_to_the_auto_router_when_the_preferred_model_is_overloaded():
+    """真實踩到的:免費的 Nvidia 模型單獨打一次就滿載。沒有這層退回,
+    客人收到的就是 fallback 訊息 —— 技術上正確,現場觀感很差。"""
+    r = complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_by_model({PREFERRED: _overloaded,
+                                         FALLBACK: lambda: _ok("退回之後答出來了")})))
+    assert r.text == "退回之後答出來了"
+    assert r.model == FALLBACK
+
+
+def test_does_not_retry_when_the_preferred_model_works():
+    """偏好模型會通時不可以多打一次 —— 免費額度是按請求數算的。"""
+    calls = []
+
+    def handler(request):
+        import json
+        calls.append(json.loads(request.content)["model"])
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    assert calls == [PREFERRED]
+
+
+def test_raises_only_after_every_model_has_failed():
+    with pytest.raises(LLMError) as exc:
+        complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_by_model({PREFERRED: _overloaded,
+                                         FALLBACK: _overloaded})))
+    # 錯誤訊息要講出兩個模型都試過了,否則查的人會以為只打了一次
+    assert PREFERRED in str(exc.value) and FALLBACK in str(exc.value)
+
+
+def test_does_not_try_the_same_model_twice(monkeypatch):
+    """退回模型設成跟偏好模型一樣時,不該白白多打一次同一個上游。"""
+    class FakeSettings:
+        openrouter_model = "same/model"
+        openrouter_fallback_model = "same/model"
+        openrouter_base_url = _S.openrouter_base_url
+        openrouter_api_key = "k"
+        llm_max_tokens = _S.llm_max_tokens
+        llm_timeout_seconds = _S.llm_timeout_seconds
+
+    monkeypatch.setattr("app.agent.llm.get_settings", lambda: FakeSettings())
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return _overloaded()
+
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    assert len(calls) == 1

@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     openrouter_api_key: str
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    # 偏好模型滿載時改用這個。openrouter/free 是自動路由 —— OpenRouter
+    # 會自己挑一個當下活著的免費模型。免費供應商滿載是常態,不是例外。
+    openrouter_fallback_model: str = "openrouter/free"
     llm_timeout_seconds: float = 45.0
     llm_max_tokens: int = 1200
 
