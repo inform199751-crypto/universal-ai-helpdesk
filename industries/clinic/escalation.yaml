@@ -1,0 +1,25 @@
+- level: L3
+  category: safety
+  trigger: 我這個症狀是不是、會不會是癌症、要不要吃藥、嚴不嚴重
+  action: transfer
+  script: 這需要醫師當面評估才能回答,我無法在線上判斷。請您來電 02-8765-4321 安排看診;若情況緊急請直接就醫。
+- level: L3
+  category: legal
+  trigger: 醫療疏失、要提告、申訴、衛生局、醫審會
+  action: transfer
+  script: 這部分我請診所主管直接與您聯繫,請留下方便的時間與電話。
+- level: L2
+  category: money
+  trigger: 收費不對、多收、退費、健保為什麼沒給付
+  action: transfer
+  script: 我幫您轉給櫃檯同仁核對收費明細,請提供就診日期。
+- level: L2
+  category: privacy
+  trigger: 病歷、個資、要求刪除資料、不要再傳訊息
+  action: transfer
+  script: 病歷與個資相關的申請需要本人辦理,我請專人與您說明流程。
+- level: L1
+  category: service
+  trigger: 等太久、候診時間長、櫃檯態度
+  action: apologize
+  script: 很抱歉讓您久候,我會把您的意見轉達給現場同仁。

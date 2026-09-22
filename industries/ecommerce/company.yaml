@@ -1,0 +1,10 @@
+name: 好日子生活選物
+industry: ecommerce
+hours: 09:00-18:00(週六日不出貨)
+contact: service@example.com
+tone: 有效率、把話講清楚,不要拖泥帶水
+forbidden_phrases:
+  - 保證
+  - 一定會到
+  - 絕對不會壞
+  - 終身

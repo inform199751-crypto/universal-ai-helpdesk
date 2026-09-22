@@ -1,0 +1,11 @@
+name: 晴日皮膚科診所
+industry: clinic
+hours: 09:00-12:00、14:00-21:00(週日休診)
+contact: 02-8765-4321
+tone: 沉穩、謹慎,不做任何醫療判斷
+forbidden_phrases:
+  - 保證
+  - 一定會好
+  - 確定是
+  - 不用看醫生
+  - 診斷
