@@ -5,6 +5,18 @@
 > Universal AI Helpdesk — 企業把自己的資料放進一個資料夾,不改任何一行程式碼,
 > 就得到一個掛在 LINE 官方帳號上的 AI 客服。
 
+
+![同一個 LINE 帳號,換一個資料夾就換一個行業](docs/media/switch-industry.gif)
+
+影片中間唯一發生的事:
+
+```bash
+python -m app.cli seed --industry clinic --slug bistro --reset-history
+```
+
+**沒有重啟服務、沒有改任何一行程式碼、LINE Console 的設定也沒動。**
+上一則它還是餐酒館,下一則它已經知道自己不該回答醫療問題。
+
 ### 導入時:資料進系統(一家企業只做一次)
 
 ```mermaid

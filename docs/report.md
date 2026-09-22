@@ -136,6 +136,12 @@ Enum 用 `native_enum=False`、時間欄位一律存 UTC。SQLite 還要用 conn
 
 ### 真機端對端
 
+![換行業](media/switch-industry.gif)
+
+上面這段錄影裡,中間唯一執行的指令是
+`python -m app.cli seed --industry clinic --slug bistro --reset-history`。
+沒有重啟服務,也沒有動 LINE Console 的任何設定。
+
 接上真的 LINE 官方帳號,用手機驗過:
 
 | 驗證項目 | 結果 |
