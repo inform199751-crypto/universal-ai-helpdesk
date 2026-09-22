@@ -117,7 +117,7 @@ Enum 用 `native_enum=False`、時間欄位一律存 UTC。SQLite 還要用 conn
 
 ### 自動測試
 
-142 個測試,在 Python 3.11 與 3.13 上由 GitHub Actions 每次 push 執行。
+144 個測試,在 Python 3.11 與 3.13 上由 GitHub Actions 每次 push 執行。
 **測試碼 1,687 行,比正式碼的 1,439 行還多。**
 
 測試不碰網路也不碰檔案系統上的資料庫:`conftest.py` 把 `DATABASE_URL`

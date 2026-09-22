@@ -122,7 +122,7 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 
 ## 狀態
 
-**v1 完成,已經接在真的 LINE 官方帳號上跑過。** 142 個自動測試全綠。
+**v1 完成,已經接在真的 LINE 官方帳號上跑過。** 自動測試全綠 —— 數量與執行結果見上方的 CI badge,每次 push 都會在 Python 3.11 與 3.13 上重跑。
 
 真機驗證過的行為:
 
