@@ -14,7 +14,12 @@ def test_settings_strip_whitespace_from_secrets():
     assert s.openrouter_api_key == "sk-or-v1-abc"
 
 
-def test_settings_have_defaults():
+def test_settings_have_defaults(monkeypatch):
+    # 外部環境如果設了 DATABASE_URL(例如 CI 的 test-postgres job、或這裡
+    # 對著 PostgreSQL 手動跑測試時),Settings 就不會落回內建預設值 ——
+    # 斷言驗到的會是「當下環境變數剛好是什麼」,不是這個測試名稱宣稱要驗的
+    # 東西。先清掉,確保驗的是 Settings 本身宣告的預設值。
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     s = Settings(fernet_key="k", openrouter_api_key="k")
     assert s.database_url.startswith("sqlite")
     assert s.history_limit == 10

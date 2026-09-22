@@ -14,10 +14,15 @@ dependencies = [
     "PyYAML>=6.0",
     # 簡繁轉換的兜底(純 Python,CI 上不用編譯)。理由見 app/agent/zh.py
     "opencc-python-reimplemented>=0.1.7",
+    # 正式環境跑 PostgreSQL。放在 dev extra 裡的話,映像裝了主依賴卻
+    # 連不上資料庫,而且是到第一次連線才炸 —— 那時錯誤訊息講的是
+    # 「找不到 driver」,指不到「依賴宣告在錯的地方」。
+    # [binary] 有 aarch64 的 wheel,之後搬 ARM 機器不用改。
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "psycopg[binary]>=3.2"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
 
 [tool.setuptools.packages.find]
 # 明講只有 app 是套件。專案根目錄還有 alembic/、prompts/、industries/、
