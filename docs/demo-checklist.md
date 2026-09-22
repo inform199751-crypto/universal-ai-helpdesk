@@ -69,6 +69,9 @@ python -m app.cli seed --industry clinic --slug bistro --reset-history
 
 Windows PowerShell 要把 `python` 換成 `.\.venv\Scripts\python.exe`。
 
+忘記有哪些行業、哪個資料夾是哪一家:`python -m app.cli list`。
+對照表也寫在 [industries/README.md](../industries/README.md)。
+
 **兩個容易搞混的地方:**
 
 - `--slug bistro` 是 **webhook 路徑**,不是行業。三個行業共用同一個路徑,

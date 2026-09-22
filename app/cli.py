@@ -1,5 +1,6 @@
 """validate 與 seed 的命令列進入點。
 
+    python -m app.cli list                      # 有哪些行業、哪個資料夾是哪一家
     python -m app.cli validate --industry clinic
 
     # 新公司:憑證必填
@@ -36,6 +37,53 @@ def _load(industry: str):
 
 def run_validate(industry: str) -> list[Finding]:
     return validate(_load(industry))
+
+
+def run_list() -> list[dict]:
+    """掃 industries/ 底下有哪些行業,連同各自的規模與 ERROR 數。
+
+    刻意不放任何硬編碼的行業清單 —— 這個專案的主張是「行業是參數,不是
+    寫死的邏輯」,如果連列出行業都要改程式碼,那句話就站不住了。加第四個
+    行業就是丟一個資料夾進去,這裡自然會看到。
+    """
+    rows: list[dict] = []
+    if not INDUSTRIES.is_dir():
+        return rows
+    for d in sorted(INDUSTRIES.iterdir()):
+        if not d.is_dir():
+            continue
+        try:
+            data = load_industry(d)
+        except Exception as exc:  # noqa: BLE001 —— 壞掉的行業要列出來,不是讓整個指令掛掉
+            rows.append({"industry": d.name, "error": str(exc)})
+            continue
+        company = data.get("company") or {}
+        rows.append({
+            "industry": d.name,
+            "name": company.get("name", "(company.yaml 沒有 name)"),
+            "faq": len(data.get("faq") or []),
+            "policies": len(data.get("policies") or []),
+            "escalation": len(data.get("escalation") or []),
+            "glossary": len(data.get("glossary") or []),
+            "errors": len([f for f in validate(data) if f.level == "ERROR"]),
+        })
+    return rows
+
+
+def _report_list(rows: list[dict]) -> None:
+    if not rows:
+        print("industries/ 底下沒有任何行業資料夾。")
+        return
+    print("可用的行業(資料夾名稱就是 --industry 要填的值):\n")
+    for r in rows:
+        if "error" in r:
+            print(f"  {r['industry']}  <- 讀不進來:{r['error']}\n")
+            continue
+        flag = "" if r["errors"] == 0 else f"  ** 有 {r['errors']} 個 ERROR,seed 會被擋 **"
+        print(f"  --industry {r['industry']}")
+        print(f"      {r['name']}{flag}")
+        print(f"      FAQ {r['faq']} 筆 · 政策 {r['policies']} 條 · "
+              f"升級規則 {r['escalation']} 條 · 術語 {r['glossary']} 個\n")
 
 
 def _report(findings: list[Finding]) -> int:
@@ -172,6 +220,8 @@ def main(argv=None) -> int:
     v = sub.add_parser("validate")
     v.add_argument("--industry", required=True)
 
+    sub.add_parser("list")
+
     s = sub.add_parser("seed")
     s.add_argument("--industry", required=True)
     s.add_argument("--slug", required=True)
@@ -188,6 +238,9 @@ def main(argv=None) -> int:
                         "否則新人設會讀到舊行業的對話。")
 
     args = parser.parse_args(argv)
+    if args.cmd == "list":
+        _report_list(run_list())
+        return 0
     if args.cmd == "validate":
         return 1 if _report(run_validate(args.industry)) else 0
 

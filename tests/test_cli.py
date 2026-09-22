@@ -268,3 +268,39 @@ def test_seed_keeps_history_by_default():
     run_seed("restaurant", slug="aa")
     with session_scope() as db:
         assert db.query(ChatHistory).filter(ChatHistory.company_id == cid).count() == 2
+
+
+def test_list_reports_every_industry_folder():
+    """行業是參數,不是寫死的邏輯 —— 所以這道指令也不能有一份硬編碼的清單,
+    它必須真的去掃 industries/ 底下有什麼。加第四個行業時不用改這裡。"""
+    from app.cli import run_list
+    rows = run_list()
+    by_key = {r["industry"]: r for r in rows}
+    assert {"restaurant", "ecommerce", "clinic"} <= set(by_key)
+    assert by_key["clinic"]["name"] == "晴日皮膚科診所"
+    assert by_key["ecommerce"]["name"] == "好日子生活選物"
+
+
+def test_list_counts_match_the_actual_files():
+    from app.cli import run_list
+    from app.cli import INDUSTRIES
+    from app.knowledge.loader import load_industry
+    rows = {r["industry"]: r for r in run_list()}
+    data = load_industry(INDUSTRIES / "restaurant")
+    assert rows["restaurant"]["faq"] == len(data["faq"])
+    assert rows["restaurant"]["escalation"] == len(data["escalation"])
+
+
+def test_list_surfaces_industries_that_have_errors():
+    """資料壞掉的行業要在清單上就看得出來,不必等到 seed 才發現。"""
+    from app.cli import run_list
+    assert all(r.get("errors") == 0 for r in run_list()), \
+        "現有三個行業應該都是零 ERROR"
+
+
+def test_main_list_prints_the_folder_name_and_the_company_name(capsys):
+    """這道指令存在的理由就是「哪個資料夾是哪一家」,兩者都要印出來。"""
+    assert main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "restaurant" in out and "微醺之夜 Bistro" in out
+    assert "clinic" in out and "晴日皮膚科診所" in out
