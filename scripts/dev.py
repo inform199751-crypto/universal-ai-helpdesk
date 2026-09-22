@@ -17,6 +17,9 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+
+import httpx
 
 PORT = 8000
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
@@ -35,6 +38,7 @@ CLOUDFLARED_MISSING = (
 )
 
 LINE_ENDPOINT_API = "https://api.line.me/v2/bot/channel/webhook/endpoint"
+TUNNEL_READY_TIMEOUT = 60.0
 
 
 def find_cloudflared() -> str | None:
@@ -54,7 +58,26 @@ def find_cloudflared() -> str | None:
     return None
 
 
-def _register_webhook(slug: str, webhook_url: str) -> str:
+def _wait_until_live(base_url: str, timeout: float = TUNNEL_READY_TIMEOUT) -> bool:
+    """等 tunnel 真的開始轉送,再去跟 LINE 註冊。
+
+    cloudflared 在 stderr 印出網址的那一刻,Cloudflare 的邊緣還不一定開始
+    路由;而 LINE 的 PUT 會實際去打這個網址驗證,太早打就回 400
+    「Invalid webhook endpoint URL」—— 那句話會讓人去檢查網址是不是打錯,
+    但網址是對的,只是還沒活過來。實測:同一個網址早幾秒 400,通了之後 200。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(f"{base_url}/health", timeout=5).status_code == 200:
+                return True
+        except httpx.HTTPError:
+            pass
+        time.sleep(1.0)
+    return False
+
+
+def _register_webhook(slug: str, base_url: str, webhook_url: str) -> str:
     """把當次的 tunnel 網址寫回 LINE Console,回傳一句要印給人看的話。
 
     app.* 是在函式裡才 import 的:不帶 --slug 的人不需要資料庫連得上、
@@ -63,8 +86,6 @@ def _register_webhook(slug: str, webhook_url: str) -> str:
     任何失敗都只回一句話,不往外丟 —— 自動更新失敗只是「要自己去貼」,
     不該連服務都起不來。
     """
-    import httpx
-
     from app.crypto import decrypt
     from app.database import session_scope
     from app.models import Company
@@ -75,6 +96,10 @@ def _register_webhook(slug: str, webhook_url: str) -> str:
         if company is None:
             return f"找不到 slug「{slug}」,沒有自動更新。先跑一次 app.cli seed。"
         token = decrypt(company.line_channel_token_enc)
+
+    if not _wait_until_live(base_url):
+        return (f"等了 {TUNNEL_READY_TIMEOUT:.0f} 秒 tunnel 還沒通,沒有自動更新。"
+                "請手動貼上,或重跑一次。")
 
     r = httpx.put(LINE_ENDPOINT_API, json={"endpoint": webhook_url},
                   headers={"Authorization": f"Bearer {token}"}, timeout=20)
@@ -94,7 +119,7 @@ def _watch_tunnel(proc, slug: str | None = None) -> None:
         note = ""
         if slug:
             try:
-                note = _register_webhook(slug, webhook)
+                note = _register_webhook(slug, url, webhook)
             except Exception as exc:  # noqa: BLE001
                 # 自動更新是便利功能,炸掉不能讓 tunnel 監看整個停掉 ——
                 # 那樣連網址都印不出來,比沒有這個功能還糟。

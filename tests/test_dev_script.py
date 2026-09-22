@@ -84,8 +84,9 @@ def test_registers_the_webhook_with_line_when_a_slug_is_given(monkeypatch, capsy
     網址已經在手上了,寫回去只是一行 API —— 不該留給人在面試前十分鐘手動做。"""
     seen = {}
 
-    def fake_register(slug, webhook_url):
+    def fake_register(slug, base_url, webhook_url):
         seen["slug"] = slug
+        seen["base"] = base_url
         seen["url"] = webhook_url
         return "已自動寫回"
 
@@ -93,6 +94,7 @@ def test_registers_the_webhook_with_line_when_a_slug_is_given(monkeypatch, capsy
     dev._watch_tunnel(_Tunnel(), slug="bistro")
 
     assert seen == {"slug": "bistro",
+                    "base": "https://abc-def-123.trycloudflare.com",
                     "url": "https://abc-def-123.trycloudflare.com/webhook/bistro"}
     assert "已自動寫回" in capsys.readouterr().out
 
@@ -111,7 +113,7 @@ def test_does_not_touch_line_without_a_slug(monkeypatch, capsys):
 def test_registration_failure_still_prints_the_url(monkeypatch, capsys):
     """自動更新是便利功能。它炸掉不能讓 tunnel 監看整個停掉 ——
     那樣連網址都印不出來,比沒有這個功能還糟,而且人完全不知道發生什麼事。"""
-    def boom(slug, url):
+    def boom(slug, base_url, url):
         raise RuntimeError("資料庫連不上")
 
     monkeypatch.setattr(dev, "_register_webhook", boom)
@@ -120,3 +122,40 @@ def test_registration_failure_still_prints_the_url(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "https://abc-def-123.trycloudflare.com/webhook/bistro" in out
     assert "請手動貼上" in out and "資料庫連不上" in out
+
+
+def test_waits_for_the_tunnel_to_come_up_before_registering(monkeypatch):
+    """實測踩到的:cloudflared 在 stderr 印出網址的那一刻,Cloudflare 邊緣
+    還沒開始路由,而 LINE 的 PUT 會實際去打那個網址驗證 —— 早幾秒打就回
+    400「Invalid webhook endpoint URL」。那句話會讓人去檢查網址是不是打錯,
+    但網址是對的。同一個網址,通了之後 PUT 就是 200。"""
+    import httpx
+
+    attempts = []
+
+    class _Resp:
+        status_code = 200
+
+    def fake_get(url, **kwargs):
+        attempts.append(url)
+        if len(attempts) < 3:
+            raise httpx.ConnectError("tunnel 還沒通")
+        return _Resp()
+
+    monkeypatch.setattr(dev.httpx, "get", fake_get)
+    monkeypatch.setattr(dev.time, "sleep", lambda _: None)
+
+    assert dev._wait_until_live("https://x.trycloudflare.com") is True
+    assert len(attempts) == 3
+    assert attempts[0] == "https://x.trycloudflare.com/health"
+
+
+def test_gives_up_waiting_instead_of_hanging_forever(monkeypatch):
+    """等不到也要回來 —— 卡在這裡的話連網址都不會印出來。"""
+    import httpx
+
+    monkeypatch.setattr(dev.httpx, "get",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            httpx.ConnectError("永遠不通")))
+    monkeypatch.setattr(dev.time, "sleep", lambda _: None)
+    assert dev._wait_until_live("https://x.trycloudflare.com", timeout=0.05) is False
