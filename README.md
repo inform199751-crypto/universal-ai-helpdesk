@@ -115,7 +115,7 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 
 ## 狀態
 
-**v1 完成,已經接在真的 LINE 官方帳號上跑過。** 141 個自動測試全綠。
+**v1 完成,已經接在真的 LINE 官方帳號上跑過。** 142 個自動測試全綠。
 
 真機驗證過的行為:
 
