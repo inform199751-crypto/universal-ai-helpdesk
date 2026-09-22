@@ -50,6 +50,20 @@ def _post(client, body, secret=SECRET, slug="acme"):
                        headers={"X-Line-Signature": compute_signature(secret, body)})
 
 
+@pytest.fixture(autouse=True)
+def loading_calls(monkeypatch):
+    """show_loading 一律擋掉並記錄。
+
+    autouse 是刻意的:不擋的話,任何沒特別 patch 它的測試都會對
+    api.line.me 發出真的 HTTP 請求 —— 測試套件不該碰網路,
+    而且那種失敗會以「測試很慢、偶爾紅」的形式出現,很難查。
+    """
+    calls = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.show_loading",
+                        lambda self, uid, seconds=20: calls.append(uid) or True)
+    return calls
+
+
 @pytest.fixture
 def sent(monkeypatch):
     """攔住對外的兩個呼叫,記下送出去的字。"""
@@ -233,3 +247,35 @@ def test_a_text_message_after_an_image_still_sees_it_in_history(sent):
         contents = [r.content for r in
                     db.query(ChatHistory).order_by(ChatHistory.id).all()]
     assert "[圖片]" in contents
+
+
+def test_loading_animation_is_shown_before_the_llm_call(sent, loading_calls):
+    """LLM 要跑 3-15 秒。那幾秒的沉默會讓客人以為訊息沒送出去而重傳 ——
+    重傳會燒免費額度,也會讓他收到兩則幾乎一樣的回覆。"""
+    with TestClient(app) as client:
+        _post(client, _body())
+    assert loading_calls == ["U1"]
+
+
+def test_no_loading_animation_for_non_text(sent, loading_calls):
+    """非文字訊息走的是固定話術,不呼叫 LLM,是秒回 —— 這時跳出打字動畫
+    反而怪,而且是白白多打一次 API。"""
+    with TestClient(app) as client:
+        _post(client, _image_body(msg_id="IMG3"))
+    assert loading_calls == []
+
+
+def test_loading_failure_does_not_stop_the_answer(monkeypatch):
+    """動畫是錦上添花。它壞掉不能讓客人收不到答案。"""
+    out = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.show_loading",
+                        lambda self, uid, seconds=20: (_ for _ in ()).throw(
+                            RuntimeError("loading 端點掛了")))
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: out.append(text) or True)
+    monkeypatch.setattr("app.routers.webhook.complete",
+                        lambda messages, **kw: LLMResult("您好", token_count=1,
+                                                         latency_ms=1))
+    with TestClient(app) as client:
+        assert _post(client, _body()).status_code == 200
+    assert out == ["您好"]

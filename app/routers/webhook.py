@@ -169,6 +169,17 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             system_prompt = company.system_prompt
             fallback = company.fallback_message
 
+        # 先讓客人的對話框出現「正在輸入」。LLM 要跑 3-15 秒,那段沉默會讓人
+        # 以為訊息沒送出去而重傳。
+        #
+        # 自己包一層 try:這是純裝飾性的呼叫,不該有能力毀掉主流程。沒有這層的話
+        # 它丟出的例外會被最外層的 except 接走,客人收到的是 fallback 訊息而不是
+        # 真正的答案 —— 答案明明算得出來,卻因為動畫沒叫成功而丟掉。
+        try:
+            client.show_loading(line_user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("輸入中動畫沒叫成功,不影響回覆", exc_info=True)
+
         # LLM 呼叫放在 session 外面:不要抓著資料庫連線等十五秒
         try:
             result = complete(build_messages(system_prompt, history, text))

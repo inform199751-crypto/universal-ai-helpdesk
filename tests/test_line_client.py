@@ -84,3 +84,37 @@ def test_send_skips_reply_entirely_when_no_reply_token():
 
     assert _client(handler).send("", "U1", "您好") is True
     assert calls == ["/v2/bot/message/push"]
+
+
+def test_show_loading_posts_to_the_loading_endpoint():
+    seen = {}
+
+    def handler(request):
+        import json
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(202, json={})
+
+    assert _client(handler).show_loading("U1") is True
+    assert seen["path"] == "/v2/bot/chat/loading/start"
+    assert seen["body"]["chatId"] == "U1"
+    # 秒數必須是 5 的倍數、5~60,否則 LINE 直接回 400
+    assert seen["body"]["loadingSeconds"] % 5 == 0
+    assert 5 <= seen["body"]["loadingSeconds"] <= 60
+
+
+def test_show_loading_treats_202_as_success():
+    """這支 API 回的是 202 Accepted,不是 200。只認 200 的話每次都會被
+    當成失敗寫進 log —— 動畫其實有出來,log 卻天天在喊錯。"""
+    assert _client(lambda req: httpx.Response(202, json={})).show_loading("U1") is True
+
+
+def test_show_loading_failure_is_not_fatal():
+    """動畫是錦上添花。它失敗不能影響客人拿到答案,所以只回 False。"""
+    assert _client(lambda req: httpx.Response(400, json={})).show_loading("U1") is False
+
+
+def test_reply_still_requires_200():
+    """202 只對 loading 那支端點成立。reply 回 202 不代表送出去了,
+    不可以因為放寬了一支就連帶放寬全部。"""
+    assert _client(lambda req: httpx.Response(202, json={})).reply("rt", "hi") is False

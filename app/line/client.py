@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://api.line.me"
 REPLY_PATH = "/v2/bot/message/reply"
 PUSH_PATH = "/v2/bot/message/push"
+LOADING_PATH = "/v2/bot/chat/loading/start"
 SUFFIX = "(訊息過長已截斷)"
 
 
@@ -39,7 +40,8 @@ class LineClient:
         self._token = access_token.strip()
         self._http = httpx.Client(base_url=API_BASE, timeout=timeout)
 
-    def _post(self, path: str, payload: dict) -> bool:
+    def _post(self, path: str, payload: dict,
+              ok: tuple[int, ...] = (200,)) -> bool:
         try:
             r = self._http.post(
                 path,
@@ -49,7 +51,7 @@ class LineClient:
         except httpx.HTTPError as exc:
             logger.warning("LINE %s 連線失敗:%s", path, exc)
             return False
-        if r.status_code != 200:
+        if r.status_code not in ok:
             logger.warning("LINE %s 回 %s:%s", path, r.status_code, r.text[:300])
             return False
         return True
@@ -65,6 +67,23 @@ class LineClient:
             "to": to,
             "messages": [{"type": "text", "text": text}],
         })
+
+    def show_loading(self, user_id: str, seconds: int = 20) -> bool:
+        """讓客人的對話框出現「正在輸入」的動畫。
+
+        LLM 要跑 3-15 秒,偏好模型滿載退回備援時更久。那幾秒的沉默會讓人
+        以為訊息沒送出去而重傳 —— 重傳除了燒免費額度,還會讓對話變亂,
+        而且客人最後會收到兩則幾乎一樣的回覆。
+
+        seconds 必須是 5 的倍數、5~60,否則 LINE 直接回 400。動畫在我們
+        送出回覆時會自動消失,所以寧可設長一點,不要設得剛剛好。
+
+        這支端點回的是 202 Accepted 不是 200 —— 只認 200 的話會每次都被
+        當成失敗寫進 log,動畫其實有出來,log 卻天天在喊錯。
+        """
+        return self._post(LOADING_PATH,
+                          {"chatId": user_id.strip(), "loadingSeconds": seconds},
+                          ok=(200, 202))
 
     def send(self, reply_token: str, user_id: str, text: str) -> bool:
         """先 reply,失敗改 push。兩個都失敗就放棄 ——
