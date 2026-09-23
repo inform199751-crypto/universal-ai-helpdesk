@@ -1,0 +1,59 @@
+name: helpdesk
+
+services:
+  db:
+    # 主版本釘死,不准寫 latest。資料目錄格式跟主版本綁定 —— 映像跳版會
+    # 對著既有的 pgdata volume 直接啟動失敗,而錯誤訊息講的是資料目錄
+    # 版本不符,不會說「你換了映像」。要升級請有意識地跑 pg_upgrade。
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?請在 .env 設 POSTGRES_PASSWORD}
+      POSTGRES_DB: helpdesk
+    ports:
+      # 只給 127.0.0.1。Task 5 的搬遷腳本跑在主機上(來源那個 SQLite 檔
+      # 被 .dockerignore 擋掉了,不在映像裡),沒有這行它連不進來。
+      # 平常用 psql 看一眼資料也靠它。絕對不要改成 0.0.0.0 ——
+      # 那等於把資料庫端口開給同網段的所有人。
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helpdesk -d helpdesk"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build: .
+    depends_on:
+      # 沒有這個,開機第一件事 alembic upgrade head 會在 PostgreSQL 還沒
+      # ready 時失敗。restart policy 會一直重試直到成功,但 log 會塞滿
+      # 指不到真正原因的錯誤。
+      db:
+        condition: service_healthy
+    environment:
+      # 容器裡連的是服務名 db,不是 localhost
+      DATABASE_URL: postgresql+psycopg://helpdesk:${POSTGRES_PASSWORD:?}@db:5432/helpdesk
+      FERNET_KEY: ${FERNET_KEY:?請在 .env 設 FERNET_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?請在 .env 設 OPENROUTER_API_KEY}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL:-openrouter/free}
+    ports:
+      # 只綁 127.0.0.1。綁 0.0.0.0 的話,同網段的人(會議室 Wi-Fi)
+      # 直接打得到 webhook 端點。容器內部仍然聽 0.0.0.0 —— 那是必要的,
+      # 不然這個 port publish 轉不進去。兩件事不一樣。
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      # 注意:healthcheck 不會重啟容器(那是 Swarm 的行為)。它的用途是
+      # 讓 docker compose ps 看得出狀態,以及給別的服務 depends_on 等。
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
