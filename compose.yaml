@@ -91,6 +91,35 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  ngrok:
+    # Task 6 的驗收(網址固定、外網 curl 200)全部通過,但那些客戶端都不是
+    # LINE。手機實測「已讀不回」,系統化除錯之後發現:LINE 的 TLS 客戶端跟
+    # Tailscale Funnel 談判到一半就自己斷線 —— tailscale 的 log 是
+    # `TLS handshake error ... EOF`,LINE 官方 webhook 測試端點回的是
+    # `Session protocol negotiation failure`(statusCode: 0)。同一個網址,
+    # curl / Python / 瀏覽器全部成功,只有 LINE 不行(疑似跟 Funnel 憑證只發
+    # ECDSA、沒有 RSA 這個選項有關)。而 LINE 是這個系統唯一重要的客戶端 ——
+    # 打不進來,前面 Task 6/7 做的固定網址等於白搭。
+    #
+    # 這個服務是「加上去」,不是「換掉」:tailscale 原封不動留著,等這裡用
+    # LINE 官方測試端點驗證真的通了,才會有下一個 task 決定要不要拆。
+    #
+    # 不需要 state volume。固定網域(unsaid-expend-eagle.ngrok-free.dev)是
+    # 綁在 ngrok 帳號上,不是綁在節點身分上 —— 容器重建不會換網址,Task 6
+    # 那個「volume 是網址命脈、沒掛就換名字」的整類風險在這裡不存在。
+    image: ngrok/ngrok:latest
+    # --log=stdout:ngrok agent 的 --log 預設是 "false"(完全不輸出),不加
+    # 這行 `docker compose logs ngrok` 永遠是空的 —— 連「有沒有連上」都看不
+    # 出來,出事時也無法比照 Tailscale 那次靠 log 抓到 TLS handshake error
+    # 的做法排查。
+    command: ["http", "app:8000", "--url=https://unsaid-expend-eagle.ngrok-free.dev", "--log=stdout"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?請在 .env 設 NGROK_AUTHTOKEN}
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
   ts-state:
