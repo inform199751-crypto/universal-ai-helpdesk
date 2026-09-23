@@ -224,12 +224,53 @@ auth key 最長 90 天,但節點註冊完就不再需要它(身分在 volume 裡
 真相來源 —— 兩邊有一天會不一致,而且會在「搬完之後某個欄位莫名其妙不存在」的時候才發現。
 腳本開頭要檢查目標的表在不在,不在就直接報錯並告訴人先做第 1 步。
 
-### 好消息:沒有 sequence 要修
+### sequence 要修 —— 而且這一節原本寫錯了
 
-主鍵是 `String(36)` 存 UUID(v1 決策 8),不是自增整數。
+> **2026-09-23 更正。** 本節原本寫「好消息:沒有 sequence 要修」,理由是主鍵都是
+> `String(36)` 存 UUID(v1 決策 8)。**那是錯的,而且錯得很貴。**
+>
+> 四張表裡有三張是 UUID,但 **`chat_histories.id` 是
+> `Integer, primary_key=True, autoincrement=True`**(見 `app/models/chat.py`)——
+> 訊息是不可變的流水紀錄,用自增整數是刻意的設計,不是疏漏。
+>
+> 我寫這一節時只看了 `company.py`,看到 `String(36)` 就推論四張表都一樣,
+> 從來沒打開 `chat_histories.py`。這段錯誤的文字後來被複製進實作計畫、
+> 再被複製進 commit 訊息 —— **一個沒驗證的前提會一路傳播下去。**
 
-**SQLite → PostgreSQL 最經典的坑因此不存在**:自增整數搬過去之後 PG 的序號還停在 1,
-資料看起來全都在,一寫新資料就 `duplicate key value violates unique constraint`。
+所以 **SQLite → PostgreSQL 最經典的坑在這個專案是存在的**,只是只存在於一張表:
+
+自增整數搬過去之後,PG 的序號還停在 1(`last_value=1, is_called=f`),
+資料看起來全都在,**一寫新資料就 `duplicate key value violates unique constraint`**。
+對這個系統而言,「一寫新資料」就是下一則進來的 LINE 訊息。
+
+**對策:搬完之後把每一張真的有序號的表的序號推到 `MAX(id)`。**
+
+```sql
+SELECT setval(
+    pg_get_serial_sequence('<表名>', 'id'),
+    COALESCE((SELECT MAX(id) FROM <表名>), 1),
+    (SELECT COUNT(*) FROM <表名>) > 0
+);
+```
+
+三個刻意的細節:
+
+1. **用 `pg_get_serial_sequence` 動態查,不要寫死「只有 chat_histories 需要」。**
+   寫死等於把「我檢查過每一張表」這個假設再編碼一次 —— 而那正是本節原本犯的錯。
+   UUID 主鍵的表會回 NULL,跳過即可。
+2. **第三個參數 `is_called`。** 表是空的時候傳 `false`,否則序號會從 2 開始,平白跳過 1。
+3. **只在 PostgreSQL 上執行。** `pg_get_serial_sequence` 在 SQLite 不存在,
+   而測試是 SQLite → SQLite 跑的。
+
+### 為什麼兩層測試都沒擋住這個
+
+值得記下來,因為這是「測試全綠但東西是壞的」的標準形狀:
+
+- **自動測試搬 SQLite → SQLite**,而 SQLite 根本沒有 PostgreSQL 那種 sequence 物件,
+  所以這個 bug 在那裡不可能重現
+- **手動驗收只查了 slug、token 解得開、時間戳沒位移**,**從來沒有「搬完之後插入一筆新資料」**
+
+漏的不是某個斷言,是**整整一類操作**:驗證只做了「讀」,沒有做「寫」。
 
 ### 真正的坑:時間會整批位移,而且沒有錯誤訊息
 
