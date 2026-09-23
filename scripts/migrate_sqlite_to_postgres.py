@@ -97,8 +97,12 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="migrate_sqlite_to_postgres")
     parser.add_argument("--source", default="sqlite:///./helpdesk.db")
     parser.add_argument(
+        # 範例刻意寫 127.0.0.1 而不是 localhost。Windows 的 localhost 會先
+        # 解析成 IPv6 的 ::1,但 Docker 發布的埠只綁 IPv4 —— 那次嘗試要等
+        # 到逾時才退回,實測連線要多花兩分鐘,而且畫面上什麼都沒有。
+        # 看起來像資料庫沒起來,其實只是位址挑錯。
         "--target", required=True,
-        help="例如 postgresql+psycopg://helpdesk:<密碼>@localhost:15432/helpdesk")
+        help="例如 postgresql+psycopg://helpdesk:<密碼>@127.0.0.1:15432/helpdesk")
     parser.add_argument("--dry-run", action="store_true",
                         help="只印出每張表幾列,不寫入任何東西。")
     parser.add_argument("--force", action="store_true",
