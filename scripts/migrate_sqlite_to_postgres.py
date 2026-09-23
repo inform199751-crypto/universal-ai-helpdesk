@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import create_engine, func, inspect, select, text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -87,6 +87,41 @@ def copy_all(source_url: str, target_url: str, *,
                 d.execute(table.insert(), [
                     {k: as_utc(v) for k, v in row.items()} for row in rows
                 ])
+
+            # 搬完之後把每一張真的有序號的表推到 MAX(id)。
+            #
+            # 自增整數主鍵搬過去之後,PG 的序號還停在 1 —— 資料看起來全都在,
+            # 一寫新資料就 duplicate key。對這個系統而言,「一寫新資料」就是
+            # 下一則進來的 LINE 訊息。
+            #
+            # 用 pg_get_serial_sequence 動態查,不寫死「只有 chat_histories 需要」:
+            # 寫死等於把「我檢查過每一張表」這個假設再編碼一次,而這個 bug 的
+            # 根因正是那個假設。UUID 主鍵的表會回 NULL,自然跳過。
+            #
+            # 分兩步查而不是塞進同一句 SQL 的 WHERE 子句:COALESCE(MAX(id), 1)
+            # 對 UUID 主鍵的表(id 是 text)會在「編譯期」就報
+            # 「COALESCE types text and integer cannot be matched」——
+            # 這發生在 PostgreSQL 決定要不要真的執行那一列之前,WHERE 條件
+            # 再怎麼寫都救不了(親測:同一句話拿掉 WHERE 也是一樣的錯,
+            # 證明跟 WHERE 是否為真無關)。先在 Python 這一層問完
+            # 「這張表到底有沒有序號」,只有真的有(這個 schema 目前只有
+            # chat_histories)才組出那句會動到 MAX(id) 的 SQL,兩張查詢
+            # 天生就不會被錯的表污染。
+            if not dry_run and d.dialect.name == "postgresql":
+                for name in TABLE_ORDER:
+                    has_sequence = d.execute(
+                        text("SELECT pg_get_serial_sequence(:t, 'id') IS NOT NULL"),
+                        {"t": name},
+                    ).scalar_one()
+                    if not has_sequence:
+                        continue
+                    d.execute(text(
+                        "SELECT setval("
+                        "  pg_get_serial_sequence(:t, 'id'),"
+                        "  COALESCE((SELECT MAX(id) FROM " + name + "), 1),"
+                        "  (SELECT COUNT(*) FROM " + name + ") > 0"
+                        ")"
+                    ), {"t": name})
         return counts
     finally:
         src.dispose()
