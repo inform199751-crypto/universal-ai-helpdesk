@@ -1,0 +1,24 @@
+.git/
+.github/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 金鑰絕對不能進映像。COPY 把它烤進某一層之後,就算下一層 rm 掉,
+# 它還留在前一層的歷史裡 —— 誰 docker history 都挖得出來。
+.env
+.env.*
+!.env.example
+
+# 本機 SQLite 資料庫。它是搬遷的「來源」,不是映像的一部分。
+*.db
+*.db-journal
+
+# 文件與測試不進正式映像
+docs/
+tests/
+.superpowers/
+.idea/
