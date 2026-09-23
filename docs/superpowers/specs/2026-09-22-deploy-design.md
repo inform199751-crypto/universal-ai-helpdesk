@@ -152,15 +152,45 @@ Tailscale 節點金鑰預設 180 天到期,過期節點離線,Funnel 跟著死�
 解法是給節點打 tag(決策 4),`TS_EXTRA_ARGS=--advertise-tags=tag:helpdesk`。
 標記過的節點不適用金鑰到期。
 
-### 3. Funnel 沒在 tailnet 政策裡開 → 靜默不生效
+### 3. 走宣告式設定,就要自己補 CLI 會自動做的**兩件**事
 
-Funnel 需要政策檔有 `funnel` node attribute。用 CLI 開 Funnel 時 Tailscale 會自動加,
-但**我們走 `TS_SERVE_CONFIG` 宣告式設定,不經過 CLI 互動流程,所以要自己加**:
+用 `tailscale funnel` CLI 開啟時,Tailscale 會替你把兩件前置都辦好。我們走
+`TS_SERVE_CONFIG` 宣告式設定,不經過 CLI 互動流程,**所以兩件都要自己做**。
+
+> **2026-09-23 更正。** 本節原本只列了下面的第一件。第二件(HTTPS 憑證)在實作
+> Task 6 時才撞到 —— 節點註冊成功、`funnel` capability 也確實授予了,但 Funnel
+> 仍然不生效。**只列一半的後果,跟完全沒列一樣。**
+
+**(a) 政策檔的 tag 與 node attribute**
 
 ```json
 "tagOwners": { "tag:helpdesk": ["autogroup:admin"] },
 "nodeAttrs": [{ "target": ["tag:helpdesk"], "attr": ["funnel"] }]
 ```
+
+**(b) tailnet 層級的 HTTPS 憑證**
+
+admin console → **DNS** 頁 → **HTTPS Certificates** → 啟用(需要 MagicDNS 已開)。
+
+Funnel 的 TLS 是在節點上終結的,節點必須拿得到 `*.ts.net` 的憑證。這個開關是
+**整個 tailnet 層級**的,跟 (a) 的 Access controls 是不同頁面、不同東西。
+
+沒開的症狀特別難查,因為**每一個你會去檢查的地方都是正常的**:
+
+| 你會檢查的 | 沒開 HTTPS 憑證時看到的 |
+|---|---|
+| `tailscale status` | 節點 online,名稱正確 |
+| capability map | `funnel`、`funnel-ports` 都在 —— 政策檔沒問題 |
+| 掛進去的 `funnel.json` | 內容正確 |
+| `tailscale serve status` | **`No serve config`** ← 唯一的線索 |
+| 容器 log | `not able to issue TLS certs` |
+| 公開 DNS 解析那個 FQDN | **查不到** |
+
+`serve status` 說「沒有設定」但設定檔明明掛好了 —— 那是因為憑證發不出來,
+serve 設定根本套用不上去。
+
+> 啟用時要同意「機器名稱與 tailnet DNS 名稱會公布在公開憑證透明度帳本上」。
+> 這是 Let's Encrypt 這類憑證的固有性質,不是 Tailscale 特有的要求。
 
 ### 4. tailnet 改名 → 網址跟著變
 
@@ -398,10 +428,15 @@ service container 免費,而 `conftest.py` 已經是 `os.environ.setdefault("DAT
 ## 十一、一次性手動步驟(要人做,不是程式做)
 
 1. 註冊 Tailscale 免費帳號(Google / GitHub 登入,不用信用卡)
-2. tailnet 政策檔加上第四節第 3 點那兩段 JSON
-3. 產一把帶 `tag:helpdesk` 的 auth key,貼進 `.env`
-4. Docker Desktop 設成開機啟動
-5. 服務起來之後,把固定網址填進 LINE Console 一次(或跑 `app.cli set-webhook`)
+2. **Access controls** 頁:政策檔加上第四節第 3 點 (a) 那兩段 JSON
+3. **DNS** 頁:啟用 **HTTPS Certificates**(第四節第 3 點 (b))。
+   **這是跟第 2 步不同的頁面、不同的設定**,兩個都要做,少一個 Funnel 就不生效
+4. 產一把帶 `tag:helpdesk` 的 auth key,貼進 `.env`。
+   **只貼一把** —— 實際踩過:auth key 與 API token 被連續複製成一串黏在一起,
+   中間沒有分隔符,所有格式檢查(前綴、字元集、尾端空白)都會過關,
+   但控制平面回 `invalid key`
+5. Docker Desktop 設成開機啟動
+6. 服務起來之後,把固定網址填進 LINE Console 一次(或跑 `app.cli set-webhook`)
 
 ---
 
