@@ -37,7 +37,6 @@ CLOUDFLARED_MISSING = (
     "裝完要重開一個終端機,PATH 才會更新。"
 )
 
-LINE_ENDPOINT_API = "https://api.line.me/v2/bot/channel/webhook/endpoint"
 TUNNEL_READY_TIMEOUT = 60.0
 
 
@@ -88,6 +87,7 @@ def _register_webhook(slug: str, base_url: str, webhook_url: str) -> str:
     """
     from app.crypto import decrypt
     from app.database import session_scope
+    from app.line.client import set_webhook_endpoint
     from app.models import Company
     from sqlalchemy import select
 
@@ -101,8 +101,7 @@ def _register_webhook(slug: str, base_url: str, webhook_url: str) -> str:
         return (f"等了 {TUNNEL_READY_TIMEOUT:.0f} 秒 tunnel 還沒通,沒有自動更新。"
                 "請手動貼上,或重跑一次。")
 
-    r = httpx.put(LINE_ENDPOINT_API, json={"endpoint": webhook_url},
-                  headers={"Authorization": f"Bearer {token}"}, timeout=20)
+    r = set_webhook_endpoint(token, webhook_url)
     if r.status_code != 200:
         return f"自動更新失敗(HTTP {r.status_code}:{r.text[:200]}),請手動貼上。"
     return "已自動寫回 LINE Console,不必手動貼、也不必按 Verify。"

@@ -213,6 +213,43 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
     return company_id
 
 
+def run_set_webhook(slug: str, url: str) -> None:
+    """把固定網址一次性寫進 LINE Console。
+
+    網址固定之後這道指令一輩子只跑一次 —— 但那一次如果是人在 Console
+    手貼,就有貼錯、漏按 Verify、多一個斜線的機會,而這些的症狀都是
+    「訊息傳出去沒人回」,完全指不到真正原因。
+    """
+    # 只有真的要連資料庫時才 import(理由見檔頭的 import 註解)
+    from sqlalchemy import select
+
+    from app.crypto import decrypt
+    from app.database import session_scope
+    from app.line.client import set_webhook_endpoint
+    from app.models import Company
+
+    # 多一個斜線就變成 //webhook/<slug>,LINE 那邊 Verify 會失敗,
+    # 而錯誤訊息只說網址無效。
+    endpoint = f"{url.strip().rstrip('/')}/webhook/{slug}"
+
+    with session_scope() as db:
+        company = db.scalar(select(Company).where(Company.slug == slug))
+        if company is None:
+            raise SystemExit(
+                f"找不到 slug「{slug}」。先跑一次 `python -m app.cli seed`,"
+                "或用 `python -m app.cli list` 看有哪些行業。")
+        token = decrypt(company.line_channel_token_enc)
+
+    r = set_webhook_endpoint(token, endpoint)
+    if r.status_code != 200:
+        raise SystemExit(
+            f"LINE 拒絕了這個網址(HTTP {r.status_code}):{r.text[:300]}\n"
+            "常見原因:網址還沒真的通(LINE 會實際去打它驗證),"
+            "或 tunnel 還沒起來。先 curl 一下那個網址的 /health 再重試。")
+    print(f"✓ webhook 已設成 {endpoint}")
+    print("  不必再開 Console、也不必按 Verify。")
+
+
 def _ensure_utf8_stdout() -> None:
     """重新導向過的 stdout(存成記錄檔、被別的程式接手 pipe、排進 CI 步驟)
     在繁體中文 Windows 上預設編碼是系統的 ANSI code page(cp950)。只有
@@ -243,6 +280,11 @@ def main(argv=None) -> int:
 
     sub.add_parser("list")
 
+    w = sub.add_parser("set-webhook")
+    w.add_argument("--slug", required=True)
+    w.add_argument("--url", required=True,
+                   help="服務的根網址,例如 https://helpdesk.tail9a2f.ts.net")
+
     s = sub.add_parser("seed")
     s.add_argument("--industry", required=True)
     s.add_argument("--slug", required=True)
@@ -264,6 +306,9 @@ def main(argv=None) -> int:
         return 0
     if args.cmd == "validate":
         return 1 if _report(run_validate(args.industry)) else 0
+    if args.cmd == "set-webhook":
+        run_set_webhook(args.slug, args.url)
+        return 0
 
     run_seed(args.industry, slug=args.slug,
              channel_secret=args.channel_secret,

@@ -22,6 +22,25 @@ PUSH_PATH = "/v2/bot/message/push"
 LOADING_PATH = "/v2/bot/chat/loading/start"
 SUFFIX = "(訊息過長已截斷)"
 
+WEBHOOK_ENDPOINT_PATH = "/v2/bot/channel/webhook/endpoint"
+
+
+def set_webhook_endpoint(access_token: str, endpoint: str,
+                         *, timeout: float = 20.0) -> httpx.Response:
+    """把 webhook 網址寫回 LINE Console。
+
+    回傳原始 Response,不自己判斷成敗 —— 兩個呼叫端的需求不同:
+    scripts/dev.py 失敗只印一句話(自動更新是便利功能,不該讓 tunnel
+    監看整個停掉),CLI 失敗要回非零離開碼(人是特地來設定的,
+    沒設成功卻靜悄悄比較糟)。在這裡就決定的話,總有一邊是錯的。
+    """
+    return httpx.put(
+        f"{API_BASE}{WEBHOOK_ENDPOINT_PATH}",
+        json={"endpoint": endpoint},
+        headers={"Authorization": f"Bearer {access_token.strip()}"},
+        timeout=timeout,
+    )
+
 
 def truncate_for_line(text: str, limit: int = 5000) -> str:
     """LINE 單則文字訊息有長度上限,超過會整則失敗 —— 客人什麼都收不到,
