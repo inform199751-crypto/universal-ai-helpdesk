@@ -66,5 +66,31 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  tailscale:
+    image: tailscale/tailscale:latest
+    # 這個名字是網址的前半段:https://helpdesk.<tailnet>.ts.net
+    hostname: helpdesk
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?請在 .env 設 TS_AUTHKEY(必須帶 tag:helpdesk)}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/funnel.json
+      # 標記過的節點不適用金鑰到期。沒有這行,180 天後某一天服務會自己
+      # 斷線,而且那天你什麼都沒改,完全不會往這裡想。
+      TS_EXTRA_ARGS: --advertise-tags=tag:helpdesk
+      # 先試 userspace(零特權)。不通再照 Step 7 換 kernel 模式。
+      TS_USERSPACE: "true"
+    volumes:
+      # 這個 volume 是網址的命脈。沒掛的話容器一重建就當成新機器註冊,
+      # 而舊節點還在 tailnet 裡佔著 helpdesk 這個名字,新的會拿到
+      # helpdesk-1 —— 網址變了,LINE 那邊還指著舊的,症狀是訊息傳出去
+      # 沒人回,而 Console 看起來一切正常。
+      - ts-state:/var/lib/tailscale
+      - ./deploy/funnel.json:/config/funnel.json:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  ts-state:
