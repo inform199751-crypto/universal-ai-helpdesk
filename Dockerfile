@@ -10,11 +10,17 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# 先只複製宣告相依的東西再裝。原始碼改動不會讓 pip 那一層失效,
-# 重 build 從幾分鐘變幾秒。
+# pyproject 的 [tool.setuptools.packages.find] 只收 app*,所以 pip install .
+# 必須在 app/ 已經存在時才找得到套件 —— 這個順序改不了,而代價是改任何一行
+# app/ 的原始碼都會讓下面這層失效,pip 跟著重跑。
+#
+# 所以不關 pip 的快取,改用 BuildKit 的 cache mount:重跑時直接吃本機已經
+# 下載過的 wheel,不必再連網抓 fastapi / sqlalchemy / cryptography 那一整串。
+# (原本寫 --no-cache-dir 是反效果 —— 它關掉的正是這裡唯一能省時間的東西。
+#  cache mount 不會留在映像層裡,所以映像不會因此變大。)
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --no-cache-dir .
+RUN --mount=type=cache,target=/root/.cache/pip pip install .
 
 # 執行期才需要、但不是 Python 套件的一部分
 # (pyproject 的 include 只有 app*,理由見那個檔案的註解)
