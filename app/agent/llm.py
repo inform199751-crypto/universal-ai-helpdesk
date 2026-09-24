@@ -12,9 +12,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 
@@ -38,7 +39,7 @@ class LLMResult:
 
 
 def _complete_once(http: httpx.Client, messages: list[dict], model: str,
-                   s) -> LLMResult:
+                   s, deadline: float) -> LLMResult:
     payload = {
         "model": model,
         "messages": messages,
@@ -47,21 +48,31 @@ def _complete_once(http: httpx.Client, messages: list[dict], model: str,
     }
     started = time.monotonic()
     try:
-        r = http.post(
+        # 用串流邊讀邊看時鐘,不用 http.post 一次讀完:OpenRouter 生成期間
+        # 會持續送空白維持連線,http.post 會一直等下去,timeout 也不會觸發。
+        with http.stream(
+            "POST",
             f"{s.openrouter_base_url}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {s.openrouter_api_key}"},
-        )
+        ) as r:
+            chunks = []
+            for chunk in r.iter_bytes():
+                if time.monotonic() > deadline:
+                    raise LLMError(
+                        f"超過整體時間上限 {s.llm_total_budget_seconds:g} 秒,上游還沒送完")
+                chunks.append(chunk)
+            raw = b"".join(chunks)
     except httpx.HTTPError as exc:
         raise LLMError(f"連線失敗:{exc}") from exc
 
     elapsed = int((time.monotonic() - started) * 1000)
 
     if r.status_code != 200:
-        raise LLMError(f"HTTP {r.status_code}:{r.text[:300]}")
+        raise LLMError(f"HTTP {r.status_code}:{raw.decode(errors='replace')[:300]}")
 
     try:
-        body = r.json()
+        body = json.loads(raw)
     except ValueError as exc:
         raise LLMError("回應不是 JSON") from exc
 
@@ -85,9 +96,8 @@ def complete(messages: list[dict], *, client: httpx.Client | None = None) -> LLM
     這不是「延後重送」—— 那會讓客人收到延遲很久的孤立訊息。這裡是在
     同一次請求裡換一個上游,客人只會看到一次回覆,只是慢了幾秒。
 
-    超時的情況要知道:兩次各等 llm_timeout_seconds,合起來可能超過 LINE
-    reply token 的一分鐘效期。那條路 LineClient 會自動改用 push,客人還是
-    收得到,只是會吃掉推播額度。
+    兩個模型合計受 llm_total_budget_seconds 限制,不會越過 LINE reply token
+    的一分鐘效期。回傳的 latency_ms 也是合計的 —— 客人實際等了多久。
     """
     s = get_settings()
     models = [s.openrouter_model]
@@ -97,11 +107,21 @@ def complete(messages: list[dict], *, client: httpx.Client | None = None) -> LLM
 
     own = client is None
     http = client or httpx.Client(timeout=s.llm_timeout_seconds)
+    # 合計的截止時間,不是每個模型各一份 —— 各自一份的話最壞是兩倍時間,
+    # 正好越過 reply token 的效期。
+    started = time.monotonic()
+    deadline = started + s.llm_total_budget_seconds
     failures: list[str] = []
     try:
         for i, model in enumerate(models):
+            if time.monotonic() > deadline:
+                failures.append(f"{model} → 沒時間試了")
+                break
             try:
-                return _complete_once(http, messages, model, s)
+                result = _complete_once(http, messages, model, s, deadline)
+                # 記客人實際等了多久,不是最後那個模型花了多久 —— 只記最後
+                # 一個的話,退回越常發生紀錄越偏低。
+                return replace(result, latency_ms=int((time.monotonic() - started) * 1000))
             except LLMError as exc:
                 failures.append(f"{model} → {exc}")
                 if i + 1 < len(models):

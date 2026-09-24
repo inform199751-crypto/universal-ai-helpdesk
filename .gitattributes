@@ -1,0 +1,7 @@
+# Shell 腳本的行尾一律 LF,不受 checkout 平台影響。
+# 這個倉庫是 core.autocrlf=true 的 Windows 環境 —— 沒有這條,下一次
+# checkout 會把 docker-entrypoint.sh 改寫成 CRLF,而 Dockerfile 的
+# COPY 抓的就是工作目錄那一份。CRLF 的 shebang 在 Linux 上會讓容器
+# 回報 "exec ./docker-entrypoint.sh: no such file or directory" ——
+# 指著一個明明就在那裡的檔案,查起來完全指不到真正原因。
+*.sh text eol=lf

@@ -1,3 +1,4 @@
+import os
 from unittest.mock import patch
 
 import pytest
@@ -6,6 +7,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import Base, session_scope
+
+# PRAGMA 是 SQLite 專屬語法。PostgreSQL 的外鍵本來就一定是開著的,
+# 沒有對應的「忘記打開」風險 —— 所以這條在 PG 上不是失敗,是不適用。
+SQLITE_ONLY = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL", "sqlite://").startswith("sqlite"),
+    reason="PRAGMA 是 SQLite 專屬語法",
+)
 
 
 class _Parent(Base):
@@ -33,6 +41,7 @@ def test_sqlite_enforces_foreign_keys(tmp_engine):
         db.rollback()
 
 
+@SQLITE_ONLY
 def test_pragma_is_actually_on(tmp_engine):
     with tmp_engine.connect() as conn:
         assert conn.execute(text("PRAGMA foreign_keys")).scalar() == 1

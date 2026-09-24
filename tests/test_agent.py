@@ -147,6 +147,20 @@ def test_does_not_retry_when_the_preferred_model_works():
     assert calls == [PREFERRED]
 
 
+def test_latency_includes_the_time_spent_on_the_failed_model():
+    """latency_ms 要記客人實際等了多久,不是最後那個模型花了多久。
+    只記最後一個的話,退回越常發生,紀錄就越偏低 —— 正好在最需要
+    看清楚的時候失真。"""
+    def slow_overloaded():
+        _time.sleep(0.3)
+        return _overloaded()
+
+    r = complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_by_model({PREFERRED: slow_overloaded,
+                                         FALLBACK: lambda: _ok("退回之後答出來了")})))
+    assert r.latency_ms >= 300
+
+
 def test_raises_only_after_every_model_has_failed():
     with pytest.raises(LLMError) as exc:
         complete([{"role": "user", "content": "嗨"}],
@@ -165,6 +179,7 @@ def test_does_not_try_the_same_model_twice(monkeypatch):
         openrouter_api_key = "k"
         llm_max_tokens = _S.llm_max_tokens
         llm_timeout_seconds = _S.llm_timeout_seconds
+        llm_total_budget_seconds = _S.llm_total_budget_seconds
 
     monkeypatch.setattr("app.agent.llm.get_settings", lambda: FakeSettings())
     calls = []
@@ -176,3 +191,69 @@ def test_does_not_try_the_same_model_twice(monkeypatch):
     with pytest.raises(LLMError):
         complete([{"role": "user", "content": "嗨"}], client=_http(handler))
     assert len(calls) == 1
+
+
+# --- 整體時間上限 ------------------------------------------------------------
+
+import json as _json  # noqa: E402
+import time as _time  # noqa: E402
+
+TRICKLE_SECONDS = 3.0
+
+
+def _trickling(text="很慢的答案"):
+    """真機上踩到的形狀:OpenRouter 一秒內就回 200 標頭,然後在上游還在
+    生成時持續送空白維持連線,內容 56 秒後才到。
+
+    httpx 的 timeout 是「兩次讀到資料之間」的上限,每個空白都會把它
+    歸零 —— 所以 45 秒的 timeout 從頭到尾沒有觸發過。
+
+    TRICKLE_SECONDS 後會送出正常的 JSON,不會永遠卡著:沒有上限的
+    實作會在那時「成功」而讓斷言失敗,而不是讓整個測試卡死。
+    """
+    def body():
+        end = _time.monotonic() + TRICKLE_SECONDS
+        while _time.monotonic() < end:
+            yield b" "
+            _time.sleep(0.02)
+        yield _json.dumps({"choices": [{"message": {"content": text}}]}).encode()
+    return lambda: httpx.Response(200, content=body())
+
+
+@pytest.fixture
+def small_budget(monkeypatch):
+    class FakeSettings:
+        openrouter_model = PREFERRED
+        openrouter_fallback_model = FALLBACK
+        openrouter_base_url = _S.openrouter_base_url
+        openrouter_api_key = "k"
+        llm_max_tokens = _S.llm_max_tokens
+        llm_timeout_seconds = _S.llm_timeout_seconds
+        llm_total_budget_seconds = 0.5
+
+    monkeypatch.setattr("app.agent.llm.get_settings", lambda: FakeSettings())
+
+
+def test_a_trickling_upstream_is_cut_off_at_the_total_budget(small_budget):
+    """上游一直送空白時要在時間上限內放棄。放著等的話,客人停在「已讀」
+    直到 LINE reply token 過期 —— 連 fallback 訊息都收不到。"""
+    started = _time.monotonic()
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_by_model({PREFERRED: _trickling(),
+                                         FALLBACK: _trickling()})))
+    assert _time.monotonic() - started < TRICKLE_SECONDS
+
+
+def test_the_fallback_model_does_not_get_a_fresh_budget(small_budget):
+    """上限是兩個模型合計的。各自一份的話,最壞情況是兩倍時間,
+    正好越過 reply token 的一分鐘效期。"""
+    calls = []
+
+    def handler(request):
+        calls.append(_json.loads(request.content)["model"])
+        return _trickling()()
+
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    assert calls == [PREFERRED]

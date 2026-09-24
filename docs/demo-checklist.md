@@ -1,7 +1,8 @@
 # Demo 前檢查清單
 
-Quick Tunnel 的網址每次重啟都會變,所以這份清單每次 demo 前都要跑一遍。
-**不要靠記憶。**
+網址現在是固定的(ngrok 固定網域),重啟、重開機都不會變 —— 抄網址、
+貼 Console、按 Verify 這三件事整個消失了,現場流程從六步變三步。
+**還是不要靠記憶,照這份清單跑一遍。**
 
 ## 出門前(在家做)
 
@@ -13,22 +14,25 @@ Quick Tunnel 的網址每次重啟都會變,所以這份清單每次 demo 前都
 
 ## 現場(面試前十分鐘)
 
-- [ ] `python scripts/dev.py --slug bistro`
-- [ ] 等等號框印出「已自動寫回 LINE Console」
+- [ ] `docker compose ps` —— 三個都在跑(`app` / `db` / `ngrok`)
+- [ ] `curl https://unsaid-expend-eagle.ngrok-free.dev/health` 回
+      `{"status":"ok",...,"database":"ok"}`
 - [ ] **自己先傳一則訊息**,確認有回 —— 不要讓面試官當第一個測試者
 
-`--slug` 會讓腳本自己把當次的 tunnel 網址 PUT 回 LINE,不必抄網址、
-不必開 Console、不必按 Verify。**忘了更新的症狀是 530,而 530 長得
-完全不像「網址過期」** —— 這一步自動化掉的價值就在這裡。
+**網址是固定的,不用抄、不用貼、不用按 Verify。** 電腦重開過也一樣
+(前提是 Docker Desktop 有設成開機時啟動,見 [README](../README.md))。
 
-框裡如果印的是「請手動貼上」,才需要回到舊流程:複製那串 webhook 網址、
-貼進 Console → Messaging API → Webhook URL、按 Verify。
+會議室換 Wi-Fi 不影響 —— 對外連線是容器主動連出去建立的,不看你這邊
+連的是哪個網路。真的連不上時,`docker compose logs ngrok --tail 50`
+看有沒有連上,`docker compose restart ngrok` 重連。
 
 ## 第一次串接才要做的(之後不用重做)
 
 LINE Developers Console → 你的 Messaging API channel:
 
-- [ ] Webhook URL 填好、按 Verify、打開 **Use webhook**
+- [ ] `docker compose exec app python -m app.cli set-webhook --slug bistro --url https://unsaid-expend-eagle.ngrok-free.dev`
+      —— 一輩子只跑一次,不必開 Console、也不必按 Verify
+- [ ] Console 裡打開 **Use webhook**
 - [ ] 打開 **Webhook redelivery**(第二層保險:沒回 2xx 時 LINE 會重送,
       而 `chat_histories.line_message_id` 的 unique 索引擋得住重複回答)
 - [ ] 關掉 **Auto-reply messages** 與 **Greeting messages**,
@@ -37,7 +41,7 @@ LINE Developers Console → 你的 Messaging API channel:
       也不必再給憑證 —— 打 `GET https://api.line.me/v2/bot/info`
       帶 `Authorization: Bearer <access token>`,回應裡的 `userId` 就是:
       ```bash
-      python -m app.cli seed --industry restaurant --slug bistro --destination Uxxxx
+      docker compose exec app python -m app.cli seed --industry restaurant --slug bistro --destination Uxxxx
       ```
       沒做這步不會壞,但「路徑說是 A 公司、body 卻是 B 公司的 bot」這道
       防線是關著的,而且不會有任何跡象。
@@ -54,22 +58,22 @@ LINE Developers Console → 你的 Messaging API channel:
 ## 換行業(現場 demo 的王牌)
 
 同一個 LINE 帳號、同一個 webhook 網址,**不用重啟服務、不用再給憑證**。
-跑完下一則訊息就是新行業。
+跑完下一則訊息就是新行業。**用 `docker compose exec` 進 `app` 容器跑** ——
+在主機上直接跑 `python -m app.cli seed` 會寫進主機那份 SQLite,不是容器裡
+服務真正在讀的 PostgreSQL,demo 現場看起來像沒生效。
 
 ```bash
 # 餐飲 —— 微醺之夜 Bistro
-python -m app.cli seed --industry restaurant --slug bistro --reset-history
+docker compose exec app python -m app.cli seed --industry restaurant --slug bistro --reset-history
 
 # 電商 —— 好日子生活選物
-python -m app.cli seed --industry ecommerce --slug bistro --reset-history
+docker compose exec app python -m app.cli seed --industry ecommerce --slug bistro --reset-history
 
 # 診所 —— 晴日皮膚科(三個裡面最有說服力)
-python -m app.cli seed --industry clinic --slug bistro --reset-history
+docker compose exec app python -m app.cli seed --industry clinic --slug bistro --reset-history
 ```
 
-Windows PowerShell 要把 `python` 換成 `.\.venv\Scripts\python.exe`。
-
-忘記有哪些行業、哪個資料夾是哪一家:`python -m app.cli list`。
+忘記有哪些行業、哪個資料夾是哪一家:`docker compose exec app python -m app.cli list`。
 對照表也寫在 [industries/README.md](../industries/README.md)。
 
 **兩個容易搞混的地方:**
@@ -90,8 +94,10 @@ Windows PowerShell 要把 `python` 換成 `.\.venv\Scripts\python.exe`。
 
 ## 如果當場壞掉
 
-1. 先看 `scripts/dev.py` 的終端機,錯誤會印在那裡
-2. LINE 說 **530**?→ tunnel 斷了或網址換了。重跑 `--slug` 那道指令就會自己接回去
-3. 電腦的網路換了沒?(會議室 Wi-Fi 換了,tunnel 要重開)
-4. 都不行 → 講設計文件。**第二節決策紀錄與第六節的坑本身就是面試素材**,
+1. `docker compose logs app --tail 50`,錯誤會印在那裡
+2. LINE 說 **530**?→ 現在網址是固定的,所以 530 不再是「網址過期」,
+   而是服務或 tunnel 沒起來。`docker compose ps` 看哪個不在,
+   `docker compose logs <服務名> --tail 50` 看原因
+3. 都不行 → 講設計文件。[docs/report.md](report.md) 第七節的坑
+   (含 Tailscale Funnel 為什麼換成 ngrok 的除錯過程)本身就是面試素材,
    東西沒跑起來不代表沒東西可談
