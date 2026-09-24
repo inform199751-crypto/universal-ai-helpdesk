@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # 會自己挑一個當下活著的免費模型。免費供應商滿載是常態,不是例外。
     openrouter_fallback_model: str = "openrouter/free"
     llm_timeout_seconds: float = 45.0
+    # 兩個模型「合計」最多等多久。llm_timeout_seconds 管不到這件事:httpx 的
+    # timeout 是兩次讀到資料之間的上限,而 OpenRouter 在生成時會持續送空白
+    # 維持連線,每個空白都把它歸零 —— 真機上 45 秒的 timeout 沒觸發,答案
+    # 56 秒後才到。25 秒留足餘裕給 LINE reply token 的一分鐘效期與 fallback。
+    llm_total_budget_seconds: float = 25.0
     llm_max_tokens: int = 1200
 
     # 對話
