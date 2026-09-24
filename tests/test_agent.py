@@ -257,3 +257,72 @@ def test_the_fallback_model_does_not_get_a_fresh_budget(small_budget):
     with pytest.raises(LLMError):
         complete([{"role": "user", "content": "嗨"}], client=_http(handler))
     assert calls == [PREFERRED]
+
+
+# --- 工具呼叫 ----------------------------------------------------------------
+
+from app.agent.llm import ToolCall  # noqa: E402
+
+TOOL = {"type": "function", "function": {
+    "name": "transfer_to_human", "description": "轉給真人",
+    "parameters": {"type": "object",
+                   "properties": {"category": {"type": "string", "enum": ["safety"]}},
+                   "required": ["category"]}}}
+
+
+def _tool_response(arguments='{"category": "safety", "reason": "起紅疹"}', content=None):
+    """OpenAI 相容格式的工具呼叫。arguments 是「JSON 字串」不是物件 ——
+    這是規格,也是模型最常寫壞的地方。"""
+    return httpx.Response(200, json={
+        "choices": [{"message": {
+            "content": content,
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "transfer_to_human",
+                                         "arguments": arguments}}]}}],
+        "usage": {"total_tokens": 30}})
+
+
+def test_a_tool_call_with_empty_content_is_a_success():
+    """呼叫工具時 content 本來就常常是 null。沿用「沒有文字就是失敗」的判斷,
+    每一次轉真人都會被當成模型壞掉、改送 fallback。"""
+    r = complete([{"role": "user", "content": "我女兒吃完全身起紅疹"}],
+                 tools=[TOOL], client=_http(lambda req: _tool_response()))
+    assert r.tool_call == ToolCall("transfer_to_human",
+                                   {"category": "safety", "reason": "起紅疹"})
+    assert r.text == ""
+
+
+def test_tools_are_sent_upstream_only_when_given():
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content))
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(handler))
+    assert "tools" not in seen[0]
+    assert seen[1]["tools"] == [TOOL]
+
+
+def test_text_and_a_tool_call_are_both_returned():
+    """同時回了文字與工具呼叫時兩個都要交出去,由呼叫端決定 ——
+    在這裡丟掉任何一個,webhook 就沒辦法實作「以工具為準」。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(content="我幫您轉給專人")))
+    assert r.text == "我幫您轉給專人"
+    assert r.tool_call is not None
+
+
+def test_broken_tool_arguments_still_produce_a_tool_call():
+    """模型已經表達「要轉」了。參數 JSON 寫壞不該讓整次呼叫失敗 ——
+    那會讓客人的緊急狀況掉進 fallback。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(arguments="{category: safety")))
+    assert r.tool_call == ToolCall("transfer_to_human", {})
+
+
+def test_no_text_and_no_tool_call_is_still_a_failure():
+    empty = lambda req: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(empty))

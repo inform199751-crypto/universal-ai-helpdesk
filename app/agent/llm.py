@@ -29,6 +29,17 @@ class LLMError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """模型要求執行的工具。
+
+    arguments 解析失敗時是 {},不是例外 —— 模型已經表達「要做這件事」,
+    參數寫壞不該讓整次呼叫被當成失敗(那會讓客人掉進 fallback)。
+    """
+    name: str
+    arguments: dict
+
+
+@dataclass(frozen=True)
 class LLMResult:
     text: str
     token_count: int | None
@@ -36,16 +47,35 @@ class LLMResult:
     # 實際答出來的是哪一個模型。有了退回機制,這就不再是固定值了 ——
     # 而「今天是誰在答」是排查品質忽好忽壞時第一個要知道的事。
     model: str | None = None
+    # 放在最後,既有的 LLMResult("文字", token_count=..., latency_ms=...) 不受影響
+    tool_call: ToolCall | None = None
+
+
+def _parse_tool_call(message: dict) -> ToolCall | None:
+    """只取第一個工具呼叫。目前只提供一個工具,多的沒有意義。"""
+    calls = message.get("tool_calls") or []
+    if not calls:
+        return None
+    fn = calls[0].get("function") or {}
+    try:
+        arguments = json.loads(fn.get("arguments") or "{}")
+    except ValueError:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return ToolCall(name=fn.get("name") or "", arguments=arguments)
 
 
 def _complete_once(http: httpx.Client, messages: list[dict], model: str,
-                   s, deadline: float) -> LLMResult:
+                   s, deadline: float, tools: list[dict] | None = None) -> LLMResult:
     payload = {
         "model": model,
         "messages": messages,
         "max_tokens": s.llm_max_tokens,
         "reasoning": {"exclude": True},
     }
+    if tools:
+        payload["tools"] = tools
     started = time.monotonic()
     try:
         # 用串流邊讀邊看時鐘,不用 http.post 一次讀完:OpenRouter 生成期間
@@ -81,16 +111,20 @@ def _complete_once(http: httpx.Client, messages: list[dict], model: str,
         raise LLMError(f"上游回報錯誤:{body['error']}")
 
     choices = body.get("choices") or []
-    text = (choices[0].get("message", {}).get("content") or "").strip() if choices else ""
-    if not text:
+    message = (choices[0].get("message") or {}) if choices else {}
+    text = (message.get("content") or "").strip()
+    tool_call = _parse_tool_call(message)
+    # 呼叫工具時 content 本來就常常是 null —— 兩個都沒有才算失敗
+    if not text and tool_call is None:
         raise LLMError("拿不到內容 —— 不能把空字串送給客人")
 
     usage = body.get("usage") or {}
     return LLMResult(text=text, token_count=usage.get("total_tokens"),
-                     latency_ms=elapsed, model=model)
+                     latency_ms=elapsed, model=model, tool_call=tool_call)
 
 
-def complete(messages: list[dict], *, client: httpx.Client | None = None) -> LLMResult:
+def complete(messages: list[dict], *, tools: list[dict] | None = None,
+             client: httpx.Client | None = None) -> LLMResult:
     """依序試偏好模型、退回模型,第一個答得出來的就用。
 
     這不是「延後重送」—— 那會讓客人收到延遲很久的孤立訊息。這裡是在
@@ -118,7 +152,7 @@ def complete(messages: list[dict], *, client: httpx.Client | None = None) -> LLM
                 failures.append(f"{model} → 沒時間試了")
                 break
             try:
-                result = _complete_once(http, messages, model, s, deadline)
+                result = _complete_once(http, messages, model, s, deadline, tools)
                 # 記客人實際等了多久,不是最後那個模型花了多久 —— 只記最後
                 # 一個的話,退回越常發生紀錄越偏低。
                 return replace(result, latency_ms=int((time.monotonic() - started) * 1000))
