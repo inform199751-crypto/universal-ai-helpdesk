@@ -147,6 +147,20 @@ def test_does_not_retry_when_the_preferred_model_works():
     assert calls == [PREFERRED]
 
 
+def test_latency_includes_the_time_spent_on_the_failed_model():
+    """latency_ms 要記客人實際等了多久,不是最後那個模型花了多久。
+    只記最後一個的話,退回越常發生,紀錄就越偏低 —— 正好在最需要
+    看清楚的時候失真。"""
+    def slow_overloaded():
+        _time.sleep(0.3)
+        return _overloaded()
+
+    r = complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_by_model({PREFERRED: slow_overloaded,
+                                         FALLBACK: lambda: _ok("退回之後答出來了")})))
+    assert r.latency_ms >= 300
+
+
 def test_raises_only_after_every_model_has_failed():
     with pytest.raises(LLMError) as exc:
         complete([{"role": "user", "content": "嗨"}],
