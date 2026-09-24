@@ -220,8 +220,32 @@ auth key 最長 90 天,但節點註冊完就不再需要它(身分在 volume 裡
 | Windows 重開機(Docker Desktop 設成開機啟動) | 會 |
 | PostgreSQL 先死 | 會。app 連不上會退出 → 重啟 → `depends_on` 等 db healthy |
 | **卡住但沒退出**(例如連線池耗盡) | **不會** |
+| **`docker stop` / `docker kill`(人手動停掉)** | **不會 —— 這是 `unless-stopped` 的定義,不是缺陷** |
 
-最後一項**刻意留著不做**(決策 9)。文件寫出這個缺口,比假裝沒有好。
+「卡住但沒退出」**刻意留著不做**(決策 9)。「人手動停掉不會自己回來」
+不是同一類缺口——那是 `unless-stopped` 本來的定義,不是留著沒做的事,
+說明見下一小節。文件把兩者都寫出來,比只寫看起來像 bug 的那一個更誠實。
+
+### 為什麼是 `unless-stopped`,不是 `always`
+
+`docker stop` 與 `docker kill` 都會讓容器進入「人手動停過」的狀態。容器
+還活著的當下,`always` 跟 `unless-stopped` 在這件事上**行為一樣**——都
+不會因為你剛剛手動停過就自動把它拉回來。兩者真正的差別只在**下一次
+Docker daemon 重啟**的那一刻:`always` 不管你手動停過沒有,daemon 一
+重啟就把它拉回來;`unless-stopped` 記得你停過,daemon 重啟後仍然讓它
+躺著。
+
+這裡選 `unless-stopped`,是因為「人叫它停」應該被尊重:demo 前想暫停
+服務、或除錯時想讓容器維持在「死掉」的狀態方便檢查,不該跟一個會自己
+復活的容器搏鬥。真正在意的失敗模式——程式未捕捉例外炸掉、OOM 被殺、
+行程收到終止信號後自己結束——走的是「容器自己退出」這條路,不是「人
+手動叫它停」,兩個 policy 在這條路上的行為完全一樣:都會自動重啟。
+
+實測(Task 8):對 `app` 容器執行 `docker kill`,`RestartCount` 兩分鐘
+內維持不動;改成讓容器內的 uvicorn 收到 SIGTERM 後自己結束
+(`docker compose exec app sh -c "kill 1"`,模擬程式收到終止信號而不是
+被外部強制停止),`RestartCount` 立刻從 0 變成 1,`FinishedAt` 到新的
+`StartedAt` 差不到一秒,幾秒內 `docker compose ps` 就顯示 `healthy`。
 
 ### 那 healthcheck 還做嗎
 
@@ -416,7 +440,7 @@ service container 免費,而 `conftest.py` 已經是 `os.environ.setdefault("DAT
 | 4 | 搬遷正確 | PG 裡看得到那家公司,**access token 解得開**,時間戳沒位移 |
 | 5 | 整條鏈通 | 手機傳訊息 → 收到該行業的答案 |
 | 6 | **網址真的固定** | `docker compose down && docker compose up -d` → **網址不變** |
-| 7 | 當掉會回來 | `docker kill` app 容器 → 自己起來 |
+| 7 | 當掉會回來 | 讓容器內的行程非正常結束(例如 `docker compose exec app sh -c "kill 1"`),容器自己重啟 —— **不是 `docker kill`,那算人手動停止,`unless-stopped` 定義上不會回來,見第五節** |
 | 8 | **重開機會回來** | Windows 重開機 → 服務自己回來,**而且網址不變** |
 | 9 | 換行業照舊 | `docker compose exec app python -m app.cli seed --industry clinic ...` |
 | 10 | 測試全綠 | pytest 在 SQLite 與 PostgreSQL 兩組都過 |

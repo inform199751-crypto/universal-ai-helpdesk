@@ -296,7 +296,8 @@ curl 能代表「網路層通不通」,不能代表「LINE 能不能連」——
 
 1. ~~沒有部署~~ → **已部署,但仍在自有硬體上。** 服務、PostgreSQL 與對外
    入口都跑在容器裡,固定網址,`restart: unless-stopped` 讓容器退出後
-   自動重啟。誠實列出還留著的缺口:
+   自動重啟。誠實列出還留著的缺口,以及一個容易被誤會成缺口、其實是
+   設計本身的地方:
 
    - **電腦沒開就連不到。** 沒有上雲,服務仍在這台筆電上 —— 設計時刻意
      解耦的結果(見[部署設計文件第一節](superpowers/specs/2026-09-22-deploy-design.md)),不是漏掉。
@@ -304,14 +305,21 @@ curl 能代表「網路層通不通」,不能代表「LINE 能不能連」——
      容器**退出**時作用;Docker 的 healthcheck 不會重啟容器,那是
      Swarm 才有的行為。連線池耗盡這類「行程還活著但沒在做事」的壞法,
      現在的機制救不回來。補這塊要多掛一個 autoheal sidecar,列在下一步。
-   - **`docker kill` 這條路徑,這次驗證時沒能乾淨重現。** 對 `app`、
-     `ngrok`,以及一個完全無關的測試容器分別執行 `docker kill`,總共
-     五次,在當時的 Docker Desktop 工作階段裡都沒有觸發自動重啟(各等了
-     40 秒到 2 分鐘);對照組 —— 容器內部行程自己結束後的重啟完全正常、
-     幾乎瞬間發生。`docker inspect` 確認 restart policy 設定無誤,懷疑
-     是那次工作階段本身的暫時狀態,但沒有透過重開 Docker Desktop 排除
-     (那會連帶重啟這台機器上其他不相干的專案,不在授權範圍內)。
-     **這一點需要重開 Docker Desktop 後重新驗證,目前不算已證實。**
+   - **`restart: unless-stopped` 不涵蓋「人手動停掉」,這是刻意的。**
+     `docker stop` 與 `docker kill` 都算手動停止,容器不會自己回來 ——
+     實測對 `app` 執行 `docker kill` 之後,`RestartCount` 維持在原地
+     不動,等了兩分鐘也一樣。想要連手動停掉都自動拉回來,那是
+     `restart: always`,而且就算是 `always`,也只在**下一次 Docker
+     daemon 重啟**時才會把它拉回來,活著的這段時間一樣不會回來 ——
+     這裡選 `unless-stopped`,是因為「人叫它停」應該被尊重:demo 前要
+     暫停服務時,不該跟一個會自己復活的容器搏鬥。真正在意的失敗模式 ——
+     程式未捕捉例外炸掉、OOM 被殺、行程自己收到 SIGTERM 而結束 ——
+     走的是「容器退出」這條路,不是「人手動叫它停」,這條路實測
+     會自動重啟:讓 `app` 容器裡的 uvicorn 收到 SIGTERM
+     (`docker compose exec app sh -c "kill 1"`,模擬程式收到終止信號
+     後結束,不是外部 `docker kill`),`RestartCount` 從 0 變成 1、
+     `FinishedAt` 到新的 `StartedAt` 只差不到一秒,`docker compose ps`
+     幾秒後就顯示 `healthy`。
    - **對外入口(ngrok 免費層)本身有硬上限:20,000 requests/月、
      1GB/月。** demo 與個人使用碰不到,但這是真的限制,不是「還沒
      撞到所以當作沒有」——超過會斷線,且錯誤不會指向「額度用完」
