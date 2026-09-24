@@ -117,8 +117,9 @@ Enum 用 `native_enum=False`、時間欄位一律存 UTC。SQLite 還要用 conn
 
 ### 自動測試
 
-144 個測試,在 Python 3.11 與 3.13 上由 GitHub Actions 每次 push 執行。
-**測試碼 1,687 行,比正式碼的 1,439 行還多。**
+163 個測試(163 通過、1 跳過),在 Python 3.11 與 3.13 上由 GitHub Actions
+每次 push 執行;另有一個專跑 PostgreSQL 的 CI job(`test-postgres`),
+同一套測試在兩種資料庫上都要過。**測試碼 1,687 行,比正式碼的 1,439 行還多。**
 
 測試不碰網路也不碰檔案系統上的資料庫:`conftest.py` 把 `DATABASE_URL`
 設成記憶體 SQLite,對外的 HTTP 一律用 `httpx.MockTransport` 或 monkeypatch
@@ -233,14 +234,88 @@ error: Multiple top-level packages discovered in a flat-layout:
 先辦一個 OpenRouter 帳號 —— **順序完全是反的**,validate 是導入現場第一個
 會跑的東西,那時候還沒有任何憑證。CI 抓到的第二個問題。
 
+### 9. 驗收全部通過,LINE 還是已讀不回
+
+這一條是 B 階段(部署)踩到的,而且是這份報告裡代價最高的一個 —— 不是因為
+難修,是因為**修之前,每一項會去檢查的東西都是真的健康**。
+
+**症狀**
+
+固定網址的驗收(Task 6)全部通過:網址固定、`docker compose down && up`
+後不變、外網 `curl` 回 200、憑證驗證通過。手機傳訊息給 LINE 官方帳號,
+**已讀不回**。
+
+**怎麼查的 —— 每一步都指向「這裡沒問題」**
+
+1. 自己在 `app` 容器裡對 `/webhook/bistro` 直接 POST 一筆假造的請求,拿到
+   `401 bad signature`。這一步故意不是要成功——是要證明**整條鏈是活的**:
+   FastAPI 在監聽、路由對、行程沒掛,只是簽章不對(本來就該不對)。
+2. 量 TLS:1.2 通、1.3 通、ALPN 協商 `h2` 通、`http/1.1` 也通,憑證鏈驗證
+   通過。
+3. 外網 `curl https://<Funnel 網址>/health` → `200 {"status":"ok",...}`。
+4. `docker compose logs tailscale` → `TLS handshake error ... EOF`。
+   第一個真正的線索,但當下還不知道「誰」跟它握手握到一半斷線——
+   curl、Python、瀏覽器打同一個網址全部成功。
+5. 最後**問 LINE 本人**——用官方 webhook 測試端點
+   (`POST /v2/bot/channel/webhook/test`)分別打兩個網址,同一個 LINE 帳號、
+   同一時間:
+
+   ```
+   ngrok      success=True   statusCode=200  reason=OK
+   tailscale  success=False  statusCode=0    reason=COULD_NOT_CONNECT
+                                             "Session protocol negotiation failure"
+   ```
+
+**根因**
+
+Tailscale Funnel 的 TLS 實作跟 LINE 的 TLS 客戶端談不攏,握手到一半被其中
+一邊掛斷。我們這端量得到的每一項(TLS 版本、ALPN、憑證鏈)都是業界標準,
+curl / Python / 瀏覽器用得起來的協商方式,LINE 的客戶端不接受——具體是
+哪個環節(推測與 Funnel 憑證只發 ECDSA、沒有 RSA 選項有關)沒有再深究,
+因為換一個入口(ngrok)已經解決問題,花時間去讀 Tailscale 的 TLS 實作
+划不來。
+
+**教訓**
+
+**Task 6 的驗收標準全部通過了,系統卻是壞的。** 不是執行有問題——每一項
+驗收都是誠實跑出來的真結果,不是做假。問題在**驗收標準本身問錯了問題**:
+「從外網打得到」驗證的是「有客戶端打得到」,而驗收挑的客戶端是 curl。
+curl 能代表「網路層通不通」,不能代表「LINE 能不能連」——這兩件事被默認
+當成同一件事,而它們不是。
+
+**唯一有效的驗收是問真正的客戶端。** 這個系統只有一個客戶端重要:LINE。
+官方測試端點(`/v2/bot/channel/webhook/test`)本來就可以直接問,而 Task 6
+的驗收清單上沒有它,是除錯到山窮水盡才想到的最後一招。事後看,這一項
+應該是**第一項**驗收,不是最後一項。
+
 ## 八、限制
 
 誠實列出來,不粉飾。
 
 **現在會直接出事的**
 
-1. **沒有部署。** 服務跑在開發者的筆電上,靠 Quick Tunnel 對外。電腦關了、
-   網路換了、程式當了都沒人重啟。
+1. ~~沒有部署~~ → **已部署,但仍在自有硬體上。** 服務、PostgreSQL 與對外
+   入口都跑在容器裡,固定網址,`restart: unless-stopped` 讓容器退出後
+   自動重啟。誠實列出還留著的缺口:
+
+   - **電腦沒開就連不到。** 沒有上雲,服務仍在這台筆電上 —— 設計時刻意
+     解耦的結果(見[部署設計文件第一節](superpowers/specs/2026-09-22-deploy-design.md)),不是漏掉。
+   - **「卡住但沒退出」不會自動處理。** `restart: unless-stopped` 只在
+     容器**退出**時作用;Docker 的 healthcheck 不會重啟容器,那是
+     Swarm 才有的行為。連線池耗盡這類「行程還活著但沒在做事」的壞法,
+     現在的機制救不回來。補這塊要多掛一個 autoheal sidecar,列在下一步。
+   - **`docker kill` 這條路徑,這次驗證時沒能乾淨重現。** 對 `app`、
+     `ngrok`,以及一個完全無關的測試容器分別執行 `docker kill`,總共
+     五次,在當時的 Docker Desktop 工作階段裡都沒有觸發自動重啟(各等了
+     40 秒到 2 分鐘);對照組 —— 容器內部行程自己結束後的重啟完全正常、
+     幾乎瞬間發生。`docker inspect` 確認 restart policy 設定無誤,懷疑
+     是那次工作階段本身的暫時狀態,但沒有透過重開 Docker Desktop 排除
+     (那會連帶重啟這台機器上其他不相干的專案,不在授權範圍內)。
+     **這一點需要重開 Docker Desktop 後重新驗證,目前不算已證實。**
+   - **對外入口(ngrok 免費層)本身有硬上限:20,000 requests/月、
+     1GB/月。** demo 與個人使用碰不到,但這是真的限制,不是「還沒
+     撞到所以當作沒有」——超過會斷線,且錯誤不會指向「額度用完」
+     這個真正原因。
 2. **沒有速率限制。** `/webhook/{slug}` 是公開端點。簽章擋得住偽造,
    擋不住「有人拿真的帳號狂傳」—— 每則都會打 LLM,免費額度一分鐘燒光,
    之後所有客人都收到 fallback。
@@ -267,7 +342,7 @@ error: Multiple top-level packages discovered in a flat-layout:
 
 | 優先 | 做什麼 | 為什麼是這個順序 |
 |---|---|---|
-| 1 | **部署 + 速率限制** | 限制 1、2 是分水嶺。沒有這兩個,它只能是「會動的原型」;有了才談得上「能放著跑」 |
+| 1 | **速率限制 + autoheal** | 部署做完之後,「能放著跑」只剩這兩塊。速率限制是限制 2;autoheal 補的是上面限制 1 留下的「卡住但沒退出」 |
 | 2 | **RAG 與知識庫** | 限制 4 是功能天花板。`knowledge_documents` 資料表與 `companies.vector_collection` 欄位在設計階段就預留了 —— 做這段等於把設計文件裡已經想好的東西兌現 |
 | 3 | **Tool calling** | 訂位(寫資料庫)、查訂單(讀資料庫)、多輪補問 |
 | 4 | **真人接管的機制** | `users.mode` / `mode_expires_at` / `human_mode_timeout_minutes` 已預留,含「客服下班忘記切回 AI,客人就永遠等不到回覆」的逾時自動歸還。**先做機制,後台介面之後再說** —— 後台是大量 UI 工時、很低的技術密度 |
@@ -277,5 +352,6 @@ error: Multiple top-level packages discovered in a flat-layout:
 這不是一個「做到一半」的系統,是一個**範圍畫得很小但做完整了**的系統。
 
 它在意的事情從頭到尾一致:不沉默、憑證不落地、壞資料不准進資料庫、
-錯誤訊息要指得到真正原因。第七節那八個坑,每一個都有對應的修正與回歸測試 ——
-**那些是真的接上去跑過才會有的東西。**
+錯誤訊息要指得到真正原因。第七節那九個坑,每一個都有對應的修正 ——
+多數也有回歸測試,唯一的例外是第 9 點:那是基礎設施層的坑,能做的驗證
+是 LINE 官方測試端點,不是 pytest。**那些是真的接上去跑過才會有的東西。**

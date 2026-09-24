@@ -100,29 +100,58 @@ FastAPI · SQLAlchemy · PostgreSQL / SQLite · Alembic · LINE Messaging API ·
 ## 怎麼跑起來
 
 ```bash
-pip install -e ".[dev]"
-cp .env.example .env        # 填 FERNET_KEY 與 OPENROUTER_API_KEY
-alembic upgrade head
-python -m app.cli seed --industry restaurant --slug bistro \n    --channel-secret <LINE Channel Secret> --channel-token <LINE Access Token>
-python scripts/dev.py --slug bistro   # 起服務 + Tunnel,並自動寫回 LINE Console
+cp .env.example .env    # 填 FERNET_KEY、OPENROUTER_API_KEY、POSTGRES_PASSWORD、NGROK_AUTHTOKEN
+docker compose up -d
+curl http://127.0.0.1:18000/health
 ```
 
-Quick Tunnel 的網址每次重啟都會變,`--slug` 會讓腳本自己把當次的網址 PUT 回
-LINE,不必手動貼、也不必按 Verify。不帶 `--slug` 就只印網址,自己去填。
+三個容器:`app`(FastAPI,開機自動跑 Alembic)、`db`(PostgreSQL)、
+`ngrok`(提供固定的對外 HTTPS 網址 `https://unsaid-expend-eagle.ngrok-free.dev`)。
+
+第一次還要做的事:
+
+- 到 [ngrok 後台](https://dashboard.ngrok.com)開一個固定網域、拿 authtoken,填進 `.env`。
+  **免費層有硬上限:20,000 requests/月、1GB/月**——demo 與個人使用用不到,
+  但這是真的限制,見 [docs/report.md 第八節](docs/report.md)
+- Docker Desktop → 齒輪 **Settings** → **General** → 勾
+  **Start Docker Desktop when you sign in to your computer**。
+  不做這步,`restart: unless-stopped` 在重開機後等於沒有——而平常測試
+  完全看不出來,因為容器本來就在跑
+- 把固定網址寫進 LINE(一輩子只要跑一次):
+
+```bash
+docker compose exec app python -m app.cli set-webhook --slug bistro --url https://unsaid-expend-eagle.ngrok-free.dev
+```
+
+網址是固定的,重啟、重開機都不會變,這道指令不必再跑第二次。
+
+> **`FERNET_KEY` 請自己留一份備份。** 它一弄丟,資料庫裡所有 LINE 憑證
+> 就解不開了,只能回 LINE Console 重拿。以前 `helpdesk.db` 躺在桌面隨手
+> 可以備份,現在資料在 Docker volume 裡,比較不容易注意到這件事。
 
 換行業(不必再給憑證,也不必重啟服務):
 
 ```bash
-python -m app.cli seed --industry ecommerce --slug bistro --reset-history
-python -m app.cli seed --industry clinic    --slug bistro --reset-history
+docker compose exec app python -m app.cli seed --industry ecommerce --slug bistro --reset-history
+docker compose exec app python -m app.cli seed --industry clinic    --slug bistro --reset-history
 ```
 
+筆電開發流程(SQLite + Quick Tunnel)仍然可用,不必碰 Docker:
+
+```bash
+pip install -e ".[dev]"
+python scripts/dev.py --slug bistro   # 起服務 + Tunnel,並自動寫回 LINE Console
+```
 
 Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 
 ## 狀態
 
-**v1 完成,已經接在真的 LINE 官方帳號上跑過。** 自動測試全綠 —— 數量與執行結果見上方的 CI badge,每次 push 都會在 Python 3.11 與 3.13 上重跑。
+**v1 完成,已經接在真的 LINE 官方帳號上跑過;B 階段部署完成 —— 服務跑在
+容器裡、資料在 PostgreSQL、對外是固定網址,設計上容器退出會自動重啟
+(`restart: unless-stopped`)。** 163 個自動測試全過、1 個跳過,SQLite 與
+PostgreSQL 各跑一輪(跳過的兩邊剛好相反:一邊是對方資料庫專屬的行為,
+證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
 
 真機驗證過的行為:
 
@@ -143,6 +172,7 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 
 | 要做什麼 | 為什麼是下一個 |
 |---|---|
+| **速率限制** | `/webhook/{slug}` 是公開端點。簽章擋得住偽造,擋不住「有人拿真的帳號狂傳」—— 每則都會打 LLM,免費額度一分鐘燒光,之後所有客人都收到 fallback。部署做完了,這是「能放著跑」剩下的最後一塊 |
 | **RAG 與知識庫** | 現在整份知識庫是塞進 system prompt 的,每則請求實測 1500-2300 tokens。12 筆 FAQ 沒問題,**200 筆塞不進去**。`knowledge_documents` 資料表與 `companies.vector_collection` 欄位在設計階段就預留了(決策 7:一家一個 collection,不是同一個 collection 用 `company_id` 過濾 —— 過濾法只要有一次忘記加 filter,就會把別家公司的文件回給客人,而且不會報錯)。 |
 | **Tool Calling** | 訂位這類要存狀態的動作。帳單計算不需要,純計算沒有外部依賴。 |
 | **真人接管** | `users.mode`、`users.mode_expires_at`、`companies.human_mode_timeout_minutes` 已預留,含「客服下班忘記切回 AI,那位客人就永遠等不到回覆」的逾時自動歸還。先做機制,後台介面之後再說。 |
