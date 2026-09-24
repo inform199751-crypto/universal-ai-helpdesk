@@ -1,7 +1,9 @@
 # B 階段:部署 — 設計文件
 
 日期:2026-09-22
-狀態:設計完成,待實作
+狀態:已實作完成,十項驗收標準(第十節)全部通過。內容描述最後落地的
+樣子(app / db / ngrok);過程中從 Tailscale Funnel 換成 ngrok 的判斷
+記錄在第二節決策 2 與第四節,沒有刪掉重寫。
 延續:[2026-09-21-design.md](2026-09-21-design.md)(v1 系統設計)
 
 一句話:**讓這套系統跑在容器裡、資料在 PostgreSQL、對外有一個永遠不變的網址,當掉會自己起來。**
@@ -22,10 +24,11 @@
 
 ### 做
 
-1. **容器化** —— `Dockerfile` + `compose.yaml`,三個服務(app / db / tailscale)。
+1. **容器化** —— `Dockerfile` + `compose.yaml`,三個服務(app / db / ngrok)。
 2. **真的跑 PostgreSQL** —— 不是「設定上支援」,是實際跑在上面,含既有資料搬遷。
-3. **固定網址** —— Tailscale Funnel,`https://<hostname>.<tailnet>.ts.net`,
-   填進 LINE Console 一次就不再碰。
+3. **固定網址** —— ngrok 固定網域,`https://unsaid-expend-eagle.ngrok-free.dev`,
+   填進 LINE Console 一次就不再碰。**原本選的是 Tailscale Funnel,實作後換成
+   ngrok —— 判斷過程見決策 2 與第四節,不是隨手換的。**
 4. **自動重啟** —— `restart: unless-stopped`,涵蓋範圍見第五節。
 5. **雙資料庫 CI** —— 同一套測試在 SQLite 與 PostgreSQL 各跑一遍。
 
@@ -57,10 +60,7 @@ compose 起得來的地方就跑得起來。本機跑通之後要搬上任何一
 | # | 決策 | 不這樣做會怎樣 |
 |---|---|---|
 | 1 | **容器化與託管解耦**,託管留到最後一步 | 免費層註冊卡住 → 整個 B 階段停擺,而其實跟容器化無關 |
-| 2 | **Tailscale Funnel**,不是 Cloudflare Named Tunnel | Named Tunnel 要自有網域(約 NT$300-400/年)。免費前提下它出局 |
-| 3 | **Tailscale 進 compose**,不裝在 Windows 主機 | 主機版簡單十分鐘,但搬上 Linux 時 tunnel 這段要整個重做,解耦就不成立 |
-| 4 | **給節點打 tag**(`tag:helpdesk`),不手動關金鑰到期 | 節點金鑰預設 180 天到期。**標記過的節點不適用到期** —— 手動關要記得做,換機器要重做 |
-| 5 | `TS_STATE_DIR` **掛 named volume** | 容器一重建就重新註冊,舊節點佔著名字 → 新的變 `helpdesk-1` → **網址變了** |
+| 2 | **原本選 Tailscale Funnel,實作後改用 ngrok** | Funnel 的固定網址本身完全成立(驗收標準 6 —— `down`/`up` 網址不變 —— 是用它通過的),但**LINE 的 TLS 客戶端跟它談不攏**,而 LINE 是這個系統唯一重要的客戶端。換成 ngrok 之後用 LINE 官方測試端點驗證才真的通,驗收標準 8(重開機網址不變)也是換成 ngrok 之後才驗過的。詳細除錯軌跡見 [docs/report.md 第七節](../report.md) |
 | 6 | **搬遷既有資料**,不重新 seed | 重新 seed 要再去 LINE Console 複製一次 channel secret / access token |
 | 7 | 密文欄位**照搬不解密** | 解密再加密等於讓明文金鑰多在記憶體與 log 裡出現一次,沒有任何好處 |
 | 8 | `/health` **加資料庫檢查** | 現在只證明行程活著。加了之後 demo 前 curl 一下就知道整條鏈通不通 |
@@ -69,20 +69,26 @@ compose 起得來的地方就跑得起來。本機跑通之後要搬上任何一
 | 11 | app 只發布到 `127.0.0.1:8000`,不綁 `0.0.0.0` | 會議室 Wi-Fi 上同網段的人直接打得到 webhook 端點 |
 | 12 | `psycopg[binary]` 從 `dev` extra **移到主依賴** | 正式映像裝了主依賴卻連不上 PostgreSQL,第一次連線才炸 |
 
+> 編號 3-5 併入決策 2 了,不是刪掉:原本是「Tailscale 進 compose、給節點
+> 打 tag、state volume 掛 named volume」三條 Tailscale 節點身分特有的
+> 決策,細節見第四節。**編號留著缺口(2 之後跳到 6),沒有把 6-12 往前
+> 移**——第五節提到的「決策 9」指的就是這份表,重排編號會讓那個引用
+> 跟著錯位。
+
 ---
 
 ## 三、整體架構
 
 ```
                         網際網路
-                           │  https://helpdesk-<tailnet>.ts.net
+                           │  https://unsaid-expend-eagle.ngrok-free.dev
                            ▼
         ┌────────────── compose 網路 ──────────────┐
         │                                          │
-   [tailscale] ──funnel──▶ [app] ─────────────▶ [db]
-   ts-state vol            FastAPI              postgres:17
-   TS_SERVE_CONFIG         alembic 開機自動      pgdata vol
-                           127.0.0.1:8000        pg_isready
+      [ngrok] ────http────▶ [app] ────────────▶ [db]
+    (無 state volume,        FastAPI              postgres:17
+     固定網域綁帳號)          alembic 開機自動      pgdata vol
+                             127.0.0.1:8000        pg_isready
         └──────────────────────────────────────────┘
               三個服務都 restart: unless-stopped
 ```
@@ -93,7 +99,7 @@ compose 起得來的地方就跑得起來。本機跑通之後要搬上任何一
 |---|---|---|
 | `app` | 本地 build | entrypoint 先 `alembic upgrade head` 再起 uvicorn。只發布到 `127.0.0.1:8000` |
 | `db` | `postgres:17-alpine` | `pgdata` named volume;healthcheck 用 `pg_isready` |
-| `tailscale` | `tailscale/tailscale` | `TS_SERVE_CONFIG` 宣告式開 Funnel;`ts-state` named volume |
+| `ngrok` | `ngrok/ngrok` | `command` 帶 `--url=<固定網域>` 指定域名;不需要 state volume ——固定網域綁在帳號上,不是節點身分,細節與 Tailscale 的取捨見第四節 |
 
 **PostgreSQL 的主版本要釘死,不能寫 `postgres:latest`。** 資料目錄的格式跟主版本綁定 ——
 映像哪天跳到下一個主版本,容器會對著既有的 `pgdata` volume 直接啟動失敗,
@@ -101,107 +107,73 @@ compose 起得來的地方就跑得起來。本機跑通之後要搬上任何一
 那是有意識的動作,不該由 `docker compose pull` 順手觸發。
 
 環境變數的分配:**機密走 `.env`,非機密直接寫在 `compose.yaml` 裡。**
-`TS_EXTRA_ARGS=--advertise-tags=tag:helpdesk` 和 `TS_STATE_DIR=/var/lib/tailscale`
-不是機密,寫進版控反而讓人看得到我們怎麼設定的;只有 `TS_AUTHKEY`、
-`POSTGRES_PASSWORD`、`FERNET_KEY`、`OPENROUTER_API_KEY` 走 `.env`。
+ngrok 的固定網域本身(`unsaid-expend-eagle.ngrok-free.dev`)不是機密,
+直接寫在 `command` 裡;只有 `NGROK_AUTHTOKEN`、`POSTGRES_PASSWORD`、
+`FERNET_KEY`、`OPENROUTER_API_KEY` 走 `.env`。
 
 `app` 用 `depends_on: { db: { condition: service_healthy } }` 等資料庫。
 沒有這個,開機第一件事 `alembic upgrade head` 會在 PostgreSQL 還沒 ready 時失敗,
 log 塞滿指不到真正原因的錯誤。
 
-### Funnel 設定(`deploy/funnel.json`)
-
-```json
-{
-  "TCP": { "443": { "HTTPS": true } },
-  "Web": {
-    "${TS_CERT_DOMAIN}:443": {
-      "Handlers": { "/": { "Proxy": "http://app:8000" } }
-    }
-  },
-  "AllowFunnel": { "${TS_CERT_DOMAIN}:443": true }
-}
-```
-
-`${TS_CERT_DOMAIN}` 由 Tailscale 自己展開成該節點的 FQDN,不用我們填。
-用宣告式設定而不是每次重啟後下 `tailscale funnel` 指令 —— 後者總有一天會忘。
-
 ---
 
-## 四、固定網址:四個會讓它悄悄失效的地方
+## 四、固定網址:走過 Tailscale,最後落在 ngrok
 
-網址的組成:
+> **2026-09-24 更正。** 本節原本整節都是 Tailscale Funnel 的坑 —— 節點
+> 狀態沒持久化網址會變、節點金鑰 180 天到期、政策檔與 tailnet HTTPS 憑證
+> 兩個開關都要開才生效、tailnet 改名網址跟著變。**這四個坑當時全部是
+> 真的,而且都靠實作驗證過**,但它們描述的是一個後來被拆掉的架構。
+>
+> **Task 6 的驗收標準全部通過了,系統卻是壞的。** 網址固定(驗收 6)、
+> 從外網打得到,兩件事都是真的通過 —— 但打的人是 curl,不是 LINE。
+> LINE 的 TLS 客戶端跟 Funnel 談判到一半就自己斷線(`docker compose
+> logs tailscale` 是 `TLS handshake error ... EOF`),而**驗收清單上
+> 沒有一項是拿 LINE 本人去測的**。換成 ngrok 之後,用 LINE 官方
+> webhook 測試端點(`/v2/bot/channel/webhook/test`)驗證才真的通
+> (`success: true`),完整除錯過程見
+> [docs/report.md 第七節](../report.md)。
+>
+> **教訓,而且要避免再犯:驗收標準要指名真正的客戶端,不能用「從外網
+> 打得到」這種代理指標。** curl 能代表網路層通不通,不能代表 LINE 連
+> 不連得上,這兩件事在當時的驗收清單裡被默認當成同一件事。這個系統
+> 只有一個客戶端重要,下一次任何「對外是否真的通」的驗收,第一項就該
+> 是問那個客戶端本人,不是除錯到山窮水盡才想到。
 
-```
-https://<TS_HOSTNAME>.<tailnet 名稱>.ts.net
-         ↑ 我們設 helpdesk   ↑ 註冊時 Tailscale 給的,例如 tail9a2f.ts.net
-```
+### 現在:ngrok 固定網域
 
-**四項全部守住,它才是固定的。** 每一項失效的症狀都是「訊息傳出去沒人回,
-但 LINE Console 看起來一切正常」。
+固定網址是 `https://unsaid-expend-eagle.ngrok-free.dev`,填進 LINE
+Console 一次就不再碰。**下面 Tailscale 那四個坑,對 ngrok 全部不
+適用,理由是同一個:ngrok 的固定網域綁在帳號上,不是綁在節點身分
+上。**
 
-### 1. 節點狀態沒持久化 → 網址直接變
+- 「節點狀態沒持久化,容器一重建就換名字」—— 不存在。沒有 state
+  volume,固定網域也不會因為容器重建而變。
+- 「節點金鑰 180 天到期」—— 不存在。沒有節點身分這個概念,自然沒有
+  節點金鑰。
+- 「政策檔 + tailnet HTTPS 憑證,兩個開關都要開才生效」—— 不存在。
+  固定網域在 ngrok dashboard 保留一次就完成,沒有第二個容易漏掉的
+  開關。
+- 「tailnet 改名網址跟著變」—— 不存在。網域是使用者自己選的字串,
+  不會因為帳號設定變動而改變。
 
-`TS_STATE_DIR=/var/lib/tailscale` 必須掛 named volume(決策 5)。
+ngrok 這邊真正該注意的,是完全不同的兩件事:
 
-### 2. 節點金鑰 180 天到期 → 半年後某天突然斷
+### 1. 免費層有硬上限
 
-Tailscale 節點金鑰預設 180 天到期,過期節點離線,Funnel 跟著死。
-**這是最惡劣的一種壞法:在你完全沒改任何東西的某一天發生。**
+**20,000 requests/月、1GB/月。** demo 與個人使用碰不到,但這是真的
+限制,不是「還沒撞到所以當作沒有」——超過會斷線,而且錯誤不會指向
+「額度用完」這個真正原因(見
+[ngrok 免費方案限制](https://ngrok.com/docs/pricing-limits/free-plan-limits))。
 
-解法是給節點打 tag(決策 4),`TS_EXTRA_ARGS=--advertise-tags=tag:helpdesk`。
-標記過的節點不適用金鑰到期。
+### 2. `--log` 預設是字面上的 `"false"`,容器完全靜默
 
-### 3. 走宣告式設定,就要自己補 CLI 會自動做的**兩件**事
+ngrok agent 的 `--log` 預設值是 `"false"`(完全不輸出),不是常見 CLI
+那種「預設印到 stderr」。第一次把 `ngrok` 服務起起來時,
+`docker compose logs ngrok` 是完全空的,連「有沒有連上、綁到哪個網域」
+都看不出來——而這正是除錯時要看的第一個地方(比照上面 Tailscale 那次
+靠 log 抓到 `TLS handshake error` 的做法)。
 
-用 `tailscale funnel` CLI 開啟時,Tailscale 會替你把兩件前置都辦好。我們走
-`TS_SERVE_CONFIG` 宣告式設定,不經過 CLI 互動流程,**所以兩件都要自己做**。
-
-> **2026-09-23 更正。** 本節原本只列了下面的第一件。第二件(HTTPS 憑證)在實作
-> Task 6 時才撞到 —— 節點註冊成功、`funnel` capability 也確實授予了,但 Funnel
-> 仍然不生效。**只列一半的後果,跟完全沒列一樣。**
-
-**(a) 政策檔的 tag 與 node attribute**
-
-```json
-"tagOwners": { "tag:helpdesk": ["autogroup:admin"] },
-"nodeAttrs": [{ "target": ["tag:helpdesk"], "attr": ["funnel"] }]
-```
-
-**(b) tailnet 層級的 HTTPS 憑證**
-
-admin console → **DNS** 頁 → **HTTPS Certificates** → 啟用(需要 MagicDNS 已開)。
-
-Funnel 的 TLS 是在節點上終結的,節點必須拿得到 `*.ts.net` 的憑證。這個開關是
-**整個 tailnet 層級**的,跟 (a) 的 Access controls 是不同頁面、不同東西。
-
-沒開的症狀特別難查,因為**每一個你會去檢查的地方都是正常的**:
-
-| 你會檢查的 | 沒開 HTTPS 憑證時看到的 |
-|---|---|
-| `tailscale status` | 節點 online,名稱正確 |
-| capability map | `funnel`、`funnel-ports` 都在 —— 政策檔沒問題 |
-| 掛進去的 `funnel.json` | 內容正確 |
-| `tailscale serve status` | **`No serve config`** ← 唯一的線索 |
-| 容器 log | `not able to issue TLS certs` |
-| 公開 DNS 解析那個 FQDN | **查不到** |
-
-`serve status` 說「沒有設定」但設定檔明明掛好了 —— 那是因為憑證發不出來,
-serve 設定根本套用不上去。
-
-> 啟用時要同意「機器名稱與 tailnet DNS 名稱會公布在公開憑證透明度帳本上」。
-> 這是 Let's Encrypt 這類憑證的固有性質,不是 Tailscale 特有的要求。
-
-### 4. tailnet 改名 → 網址跟著變
-
-tailnet 名字是網址的一部分。**註冊完先決定好名字,再去填 LINE Console。**
-
-### 不用擔心的:`TS_AUTHKEY` 過期
-
-auth key 最長 90 天,但節點註冊完就不再需要它(身分在 volume 裡)。
-它過期**不影響**已經在跑的服務,只有哪天砍掉 volume 要重建時才要再產一把。
-
-寫在這裡是因為「金鑰有效期 90 天」很容易被誤解成「要定期換,不然會斷」。
+**對策:`command` 裡加 `--log=stdout`。**
 
 ---
 
@@ -376,15 +348,18 @@ SELECT setval(
 | `docker-entrypoint.sh` | 先 `alembic upgrade head` 再 `exec uvicorn`。獨立成檔而不是塞進 `CMD`,是為了讓那兩步各自印一行看得懂的標題 —— 容器起不來時,光看 log 停在哪一行就知道是 migration 卡住還是服務卡住 |
 | `compose.yaml` | 三個服務 |
 | `.dockerignore` | 見第七節 |
-| `deploy/funnel.json` | Tailscale serve config |
 | `scripts/migrate_sqlite_to_postgres.py` | 一次性搬遷 |
+
+`deploy/funnel.json`(Tailscale serve config)原本也在這份清單裡,拆掉
+Tailscale 時一併刪除了 —— ngrok 不需要對應的設定檔,`--url` 那個旗標
+直接寫在 `compose.yaml` 的 `command` 裡就夠。
 
 ### 修改
 
 | 檔案 | 改什麼 |
 |---|---|
 | `pyproject.toml` | `psycopg[binary]` 從 `dev` extra 移到主依賴 |
-| `.env.example` | 加 `POSTGRES_PASSWORD`、`TS_AUTHKEY`;`DATABASE_URL` 的正式範例改成指向 `db` 服務 |
+| `.env.example` | 加 `POSTGRES_PASSWORD`、`NGROK_AUTHTOKEN`(原本是 `TS_AUTHKEY`,拆 Tailscale 時換掉);`DATABASE_URL` 的正式範例改成指向 `db` 服務 |
 | `app/main.py` | `/health` 加資料庫檢查 |
 | `app/cli.py` | 加 `set-webhook` 指令(把 `scripts/dev.py` 的 `_register_webhook()` 搬進來) |
 | `.github/workflows/ci.yml` | 加 PostgreSQL service container 的 job |
@@ -436,7 +411,7 @@ service container 免費,而 `conftest.py` 已經是 `os.environ.setdefault("DAT
 |---|---|---|
 | 1 | 三個容器起得來 | `docker compose up -d`,`db` 顯示 healthy |
 | 2 | 內部通 | `curl http://127.0.0.1:8000/health` → `ok`(含資料庫) |
-| 3 | 外部通 | `curl https://<fqdn>/health` 從外網打得到 |
+| 3 | 外部通 | `curl https://<fqdn>/health` 從外網打得到 —— **這一項對 Tailscale Funnel 也通過,但它驗的是 curl 通不通,不是 LINE 通不通。真正決定性的是第 5 項與第四節開頭那段教訓** |
 | 4 | 搬遷正確 | PG 裡看得到那家公司,**access token 解得開**,時間戳沒位移 |
 | 5 | 整條鏈通 | 手機傳訊息 → 收到該行業的答案 |
 | 6 | **網址真的固定** | `docker compose down && docker compose up -d` → **網址不變** |
@@ -451,16 +426,20 @@ service container 免費,而 `conftest.py` 已經是 `os.environ.setdefault("DAT
 
 ## 十一、一次性手動步驟(要人做,不是程式做)
 
-1. 註冊 Tailscale 免費帳號(Google / GitHub 登入,不用信用卡)
-2. **Access controls** 頁:政策檔加上第四節第 3 點 (a) 那兩段 JSON
-3. **DNS** 頁:啟用 **HTTPS Certificates**(第四節第 3 點 (b))。
-   **這是跟第 2 步不同的頁面、不同的設定**,兩個都要做,少一個 Funnel 就不生效
-4. 產一把帶 `tag:helpdesk` 的 auth key,貼進 `.env`。
-   **只貼一把** —— 實際踩過:auth key 與 API token 被連續複製成一串黏在一起,
-   中間沒有分隔符,所有格式檢查(前綴、字元集、尾端空白)都會過關,
-   但控制平面回 `invalid key`
-5. Docker Desktop 設成開機啟動
-6. 服務起來之後,把固定網址填進 LINE Console 一次(或跑 `app.cli set-webhook`)
+1. 註冊 ngrok 免費帳號,到
+   [dashboard.ngrok.com/get-started/your-authtoken](https://dashboard.ngrok.com/get-started/your-authtoken)
+   拿 authtoken,貼進 `.env` 的 `NGROK_AUTHTOKEN`
+2. Dashboard **Domains** 頁保留一個固定網域,寫進 `compose.yaml` 的
+   `ngrok` 服務 `command`(`--url=https://<你的網域>`)。**這一步只做
+   一次**——網域綁在帳號上,不會因為容器重建或重開機而變
+3. Docker Desktop 設成開機啟動
+4. 服務起來之後,把固定網址填進 LINE Console 一次(或跑 `app.cli set-webhook`)
+
+原本 Tailscale 版本的這份清單有 6 步:註冊帳號、**Access controls** 頁貼
+政策檔、**DNS** 頁啟用 HTTPS Certificates、產帶 `tag:helpdesk` 的 auth
+key、Docker Desktop 開機啟動、填 LINE Console——中間 3 步(政策檔、
+HTTPS 憑證、auth key)都是「節點身分」這個概念特有的設定。ngrok 沒有
+節點身分,一次性步驟少了一半,細節見第四節。
 
 ---
 
@@ -468,7 +447,7 @@ service container 免費,而 `conftest.py` 已經是 `os.environ.setdefault("DAT
 
 | # | 問題 | 現在怎麼處理 |
 |---|---|---|
-| 1 | **userspace 模式能不能跑 Funnel** | 官方文件說 userspace「works everywhere」、只有 kernel 模式需要 `NET_ADMIN` + `/dev/net/tun`,但**沒有白紙黑字寫 userspace 支援 Funnel**。實作時先試零特權版,不通才加回那兩項。計畫裡兩條路都要寫 |
+| 1 | ~~userspace 模式能不能跑 Funnel~~ | **已回答,但問題本身失去意義。** 答案是能——userspace 模式沒有擋到 Funnel,Task 6 驗收全過。但 Funnel 本身後來因為 LINE 的 TLS 客戶端不相容被整個換成 ngrok(決策 2、第四節),這個問題也就跟著失效了 |
 | 2 | **要不要上 Oracle Cloud Always Free** | 暫不排進 B 階段(見第一節解耦)。要做的話是獨立一段,compose 檔不用改。注意 2026-06-15 起 Always Free 的 Ampere A1 從 4 OCPU/24GB 降為 2 OCPU/12GB —— 對這個服務仍綽綽有餘 |
 | 3 | **`conftest.py` 在 PostgreSQL 上要不要改** | 預期不用,實作時驗(見第九節) |
 
