@@ -134,7 +134,7 @@ def _check_credentials(channel_secret: str | None,
 
 def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
              channel_token: str | None = None, destination: str | None = None,
-             reset_history: bool = False) -> str:
+             reset_history: bool = False, staff_notify_to: str | None = None) -> str:
     """把一個行業資料夾套用到某個 slug。
 
     憑證只在「這家公司還不存在」時必填。已存在的公司省略即可 —— 改店名、
@@ -142,11 +142,14 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
     複製一次,而那一步是整個導入流程裡最容易出錯的地方。
     """
     # 只有真的要寫資料庫時才把資料庫拉進來(理由見檔頭的 import 註解)
+    from datetime import datetime, timezone
+
     from sqlalchemy import select
 
+    from app.agent.handoff import return_to_ai
     from app.crypto import encrypt
     from app.database import session_scope
-    from app.models import ChatHistory, Company
+    from app.models import ChatHistory, Company, User
 
     data = _load(industry)
     findings = validate(data)
@@ -177,6 +180,8 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
         company.tone = data["company"]["tone"]
         company.forbidden_phrases = list(data["company"]["forbidden_phrases"])
         company.system_prompt = render_system_prompt(data)
+        # 跟 system_prompt 同一次 seed 寫入 —— 兩者要講同一套規則
+        company.escalation_rules = list(data.get("escalation") or [])
         company.vector_collection = f"kb_{slug}"
         # 只覆寫這次有給的東西。沒給是「不動」,不是「清空」。
         if channel_secret:
@@ -188,6 +193,8 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
         # 所以允許不帶 —— 但不帶就等於那道防線是關著的,main() 會警告。
         if destination:
             company.line_destination = destination.strip()
+        if staff_notify_to:
+            company.staff_notify_to = staff_notify_to.strip()
         db.flush()
         company_id = company.id
         if reset_history:
@@ -198,6 +205,11 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
                        .filter(ChatHistory.company_id == company_id)
                        .delete(synchronize_session=False))
             print(f"  已清掉 {removed} 則舊對話(--reset-history)")
+            # 舊對話都清了,還卡在 HUMAN 沒有意義 —— 同樣只限這一家
+            now = datetime.now(timezone.utc)
+            users = db.scalars(select(User).where(User.company_id == company_id)).all()
+            for user in users:
+                return_to_ai(user, now)
         has_destination = bool(company.line_destination)
 
     print(f"✓ 已寫入 company {company_id}(slug={slug})")
@@ -250,6 +262,34 @@ def run_set_webhook(slug: str, url: str) -> None:
     print("  不必再開 Console、也不必按 Verify。")
 
 
+def run_release(slug: str) -> int:
+    """把這家公司所有 HUMAN 模式的客人立刻交還給 AI。
+
+    示範時要用:轉真人之後客人會卡在 HUMAN 模式 30 分鐘,不交還的話
+    下一段示範得換一支手機。
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.agent.handoff import return_to_ai
+    from app.database import session_scope
+    from app.models import Company, ConversationMode, User
+
+    with session_scope() as db:
+        company = db.scalar(select(Company).where(Company.slug == slug))
+        if company is None:
+            raise SystemExit(
+                f"找不到 slug「{slug}」。用 `python -m app.cli list` 看有哪些行業。")
+        users = db.scalars(select(User).where(
+            User.company_id == company.id,
+            User.mode == ConversationMode.HUMAN)).all()
+        now = datetime.now(timezone.utc)
+        for user in users:
+            return_to_ai(user, now)
+        return len(users)
+
+
 def _ensure_utf8_stdout() -> None:
     """重新導向過的 stdout(存成記錄檔、被別的程式接手 pipe、排進 CI 步驟)
     在繁體中文 Windows 上預設編碼是系統的 ANSI code page(cp950)。只有
@@ -299,6 +339,11 @@ def main(argv=None) -> int:
     s.add_argument("--reset-history", action="store_true",
                    help="清掉這家公司的對話紀錄。換行業時建議加 —— "
                         "否則新人設會讀到舊行業的對話。")
+    s.add_argument("--staff-notify-to",
+                   help="轉真人時推播通知的對象(店員 userId)。沒給就保留原值。")
+
+    r = sub.add_parser("release")
+    r.add_argument("--slug", required=True)
 
     args = parser.parse_args(argv)
     if args.cmd == "list":
@@ -309,12 +354,17 @@ def main(argv=None) -> int:
     if args.cmd == "set-webhook":
         run_set_webhook(args.slug, args.url)
         return 0
+    if args.cmd == "release":
+        n = run_release(args.slug)
+        print(f"✓ 已把 {n} 位客人交還給 AI")
+        return 0
 
     run_seed(args.industry, slug=args.slug,
              channel_secret=args.channel_secret,
              channel_token=args.channel_token,
              destination=args.destination,
-             reset_history=args.reset_history)
+             reset_history=args.reset_history,
+             staff_notify_to=args.staff_notify_to)
     return 0
 
 
