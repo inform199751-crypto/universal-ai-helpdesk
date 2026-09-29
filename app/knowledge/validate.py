@@ -20,6 +20,9 @@ REQUIRED_HIGH_RISK = {
     "privacy": "個資",
 }
 PLACEHOLDERS = ("請填入", "TODO", "XXX", "待補")
+# 規則層(match_keyword)與工具定義(build_tool)都只認這兩種 action ——
+# 寫錯字的第三種值,兩邊都會安靜地跳過這條規則,報表卻不會有任何跡象。
+VALID_ESCALATION_ACTIONS = ("transfer", "apologize")
 HOURS_RE = re.compile(
     r"(?:"
     r"\d{1,2}:\d{2}\s*[-~]\s*\d{1,2}:\d{2}|"  # 10:00-19:00 or 10:00~19:00
@@ -69,8 +72,19 @@ def validate(data: dict[str, Any], *, max_text_length: int = 5000) -> list[Findi
             out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 level"))
         if not item.get("trigger"):
             out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 trigger"))
-        if not item.get("action"):
+        action = item.get("action")
+        if not action:
             out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 action"))
+        elif action not in VALID_ESCALATION_ACTIONS:
+            out.append(Finding("ERROR", 9,
+                               f"escalation[{i}] 的 action「{action}」不是 "
+                               "transfer 或 apologize"))
+        # category 是 build_tool() 產生 enum、decision_from_tool() 比對規則的鍵;
+        # transfer 規則沒有它,轉真人時系統只能落到「類別不認得」的通用句,
+        # 客人本來該收到的專屬話術就消失了,而且不會報錯。
+        elif action == "transfer" and not item.get("category"):
+            out.append(Finding("ERROR", 10,
+                               f"escalation[{i}] 是 transfer 規則卻缺少 category"))
         if not item.get("script"):
             out.append(Finding("ERROR", 2, f"escalation[{i}] 缺少 script"))
     for i, item in enumerate(data.get("glossary") or []):

@@ -151,3 +151,34 @@ def test_rule8_accepts_24hour_format():
 
     d["company"]["hours"] = "全天營業"
     assert "ERROR" not in _levels(validate(d), 8)
+
+
+def test_rule9_action_not_transfer_or_apologize_is_error():
+    """action 寫錯字(例如 escalate)時,規則層與工具都不會認得這條規則,
+    等於這個情境完全沒有升級路徑 —— 但看報表不會有任何跡象。"""
+    d = _ok_data(escalation=[
+        {"level": "L3", "trigger": "提告 律師 消保官", "action": "escalate",
+         "script": "這部分我請主管與您聯繫", "category": "legal"}
+    ])
+    assert "ERROR" in _levels(validate(d), 9)
+
+
+def test_rule10_transfer_without_category_is_error():
+    """category 是 build_tool() 產生 enum、decision_from_tool() 比對規則的鍵。
+    transfer 規則沒有 category,轉真人時系統會直接落到「類別不認得」的
+    通用句,客人本來該收到的專屬話術就消失了。"""
+    d = _ok_data(escalation=[
+        {"level": "L3", "trigger": "提告 律師 消保官", "action": "transfer",
+         "script": "這部分我請主管與您聯繫"}
+    ])
+    assert "ERROR" in _levels(validate(d), 10)
+
+
+def test_rule10_apologize_without_category_is_fine():
+    """category 只有 transfer 規則需要 —— apologize 不進規則層,也不會被
+    工具用到。"""
+    d = _ok_data(escalation=[
+        {"level": "L1", "trigger": "上菜太慢", "action": "apologize",
+         "script": "很抱歉讓您有這樣的感受。"}
+    ])
+    assert "ERROR" not in _levels(validate(d), 10)
