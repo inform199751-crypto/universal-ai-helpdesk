@@ -651,3 +651,33 @@ def test_the_tool_is_offered_only_when_there_are_transfer_rules(line_out, monkey
     with TestClient(app) as client:
         _post(client, _body(text="嗨", msg_id="B"))
     assert calls[1]["tools"][0]["function"]["name"] == "transfer_to_human"
+
+
+# --- F3h:seed → escalation_rules → 關鍵字層,端到端接得起來 -------------------
+
+def test_seeding_the_real_restaurant_yaml_then_a_keyword_message_transfers(
+        line_out, monkeypatch):
+    """單元測試各自用手寫的 RULES,證明不了「真的 yaml 經過 seed 存進資料庫、
+    webhook 讀出來、關鍵字層命中」這一整條接得起來。這裡不手寫任何規則:
+    走 run_seed 寫入真的 restaurant yaml,再用它的 trigger 打 webhook。
+    憑證用真實形狀(32 位十六進位 secret、約 172 字元 token),否則 seed 會擋。"""
+    from app.cli import INDUSTRIES, run_seed
+    from app.knowledge.loader import load_industry
+
+    secret = "0123456789abcdef0123456789abcdef"
+    run_seed("restaurant", slug="acme-int", channel_secret=secret,
+             channel_token="T" + "k" * 171, staff_notify_to="Ustaff")
+    safety = next(r for r in load_industry(INDUSTRIES / "restaurant")["escalation"]
+                  if r["category"] == "safety")
+    assert "過敏" in safety["trigger"]  # 前提:yaml 真的有這個 trigger
+
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        assert _post(client, _body(text="我朋友吃完過敏送醫了"),
+                     secret=secret, slug="acme-int").status_code == 200
+
+    assert calls == []  # 關鍵字層命中,沒問模型
+    assert _replies(line_out) == [safety["script"]]
+    (_, to, text), = _pushes(line_out)
+    assert to == "Ustaff" and "【安全】" in text
+    assert _mode()[0] == ConversationMode.HUMAN
