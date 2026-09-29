@@ -541,6 +541,33 @@ def test_a_push_that_raises_still_leaves_the_customer_with_exactly_one_message(
     assert _mode()[0] == ConversationMode.HUMAN
 
 
+def test_a_successful_handoff_logs_one_info_line(rules, line_out, monkeypatch, caplog):
+    """F3e:給示範現場正面的 log 證據(demo 步驟 2 要看 log 顯示轉真人發生了)。"""
+    import logging
+    caplog.set_level(logging.INFO, logger="app.routers.webhook")
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏"))
+    assert any("轉真人 category=safety" in r.message and "依據=" in r.message
+              for r in caplog.records)
+
+
+def test_a_handoff_reply_that_fails_logs_an_error(rules, monkeypatch, caplog):
+    """F3e:reply 跟 push 都失敗的話,客人在 HUMAN 模式裡卻什麼都沒收到 ——
+    這比推播失敗更嚴重(推播失敗客人至少收得到 script),必須有 error log。"""
+    import logging
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: False)
+    monkeypatch.setattr("app.routers.webhook.LineClient.push",
+                        lambda self, to, text: True)
+    _llm(monkeypatch)
+    caplog.set_level(logging.ERROR, logger="app.routers.webhook")
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏"))
+    assert any(r.levelname == "ERROR" and "沒收到任何訊息" in r.message
+              for r in caplog.records)
+
+
 def test_no_staff_target_means_no_push_but_still_transfers(rules, line_out, monkeypatch):
     with session_scope() as db:
         db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = None

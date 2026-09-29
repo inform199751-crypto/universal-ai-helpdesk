@@ -127,6 +127,12 @@ def _complete_once(http: httpx.Client, messages: list[dict], model: str,
         raise LLMError("拿不到內容 —— 不能把空字串送給客人")
 
     usage = body.get("usage") or {}
+    # 排查「品質忽好忽壞」時第一個要看的是誰在答:openrouter/free 這類自動
+    # 路由,上游實際分派到的供應商(body["model"])常常跟我們請求的 slug
+    # 不一樣。不動 LLMResult.model 的語意 —— 既有測試斷言那個欄位是請求的
+    # slug,退回機制才看得出「今天是備援模型在答」。
+    logger.info("模型 %s 回答完成(上游實際:%s,工具呼叫:%s)",
+               model, body.get("model"), tool_call.name if tool_call else "無")
     return LLMResult(text=text, token_count=usage.get("total_tokens"),
                      latency_ms=elapsed, model=model, tool_call=tool_call)
 

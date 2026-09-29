@@ -335,6 +335,33 @@ def test_tool_arguments_already_an_object_are_used_as_is():
     assert r.tool_call == ToolCall("transfer_to_human", {"category": "safety"})
 
 
+def test_a_successful_answer_logs_which_model_actually_answered(caplog):
+    """F3d:退回機制生效時,回應裡的 model 欄位(上游實際回答的模型)
+    可能跟我們請求的 slug 不一樣(例如 openrouter/free 自動路由分派到
+    的實際供應商)。品質忽好忽壞時,這是第一個要查的線索。"""
+    import logging
+    caplog.set_level(logging.INFO, logger="app.agent.llm")
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "model": "some-actual-upstream/model-x",
+            "choices": [{"message": {"content": "您好"}}],
+            "usage": {"total_tokens": 5}})
+
+    r = complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    assert r.model == PREFERRED  # 既有語意不變:model 欄位仍是請求的 slug
+    assert any("some-actual-upstream/model-x" in rec.message and "工具呼叫:無" in rec.message
+               for rec in caplog.records)
+
+
+def test_a_tool_call_answer_logs_the_tool_name(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="app.agent.llm")
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+            client=_http(lambda req: _tool_response()))
+    assert any("工具呼叫:transfer_to_human" in rec.message for rec in caplog.records)
+
+
 def test_tool_arguments_of_the_wrong_type_become_empty():
     """arguments 是其他型別(陣列、數字等)時就當成失敗解析,回 {}。"""
     r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],

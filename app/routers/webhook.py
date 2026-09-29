@@ -292,7 +292,14 @@ def _handoff(*, company_id: str, user_pk: str, client: LineClient,
         enter_human_mode(db.get(User, user_pk), timeout_minutes=timeout_minutes, now=now)
         db.add(ChatHistory(company_id=company_id, user_id=user_pk,
                            role=ChatRole.ASSISTANT, content=decision.script))
-    client.send(reply_token, line_user_id, decision.script)
+    # 給示範現場正面的 log 證據:轉真人這件事本身,以及是規則轉的還是
+    # 模型轉的,不必等到查資料庫才知道。
+    logger.info("轉真人 category=%s 依據=%s", decision.category, decision.basis)
+    if not client.send(reply_token, line_user_id, decision.script):
+        # reply 跟 push 都失敗:客人已經進了 HUMAN 模式,卻什麼都沒收到 ——
+        # 比推播失敗更嚴重(推播失敗客人至少收得到 script)。
+        logger.error("轉真人的回覆送不出去(%s),客人在 HUMAN 模式但沒收到任何訊息",
+                     line_user_id)
 
     if not staff_to:
         logger.warning("公司 %s 沒有設定 staff_notify_to,這次轉真人沒有通知任何人",
