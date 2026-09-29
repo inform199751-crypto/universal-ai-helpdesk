@@ -305,3 +305,209 @@ def test_simplified_characters_in_the_answer_are_fixed_before_sending(monkeypatc
     with session_scope() as db:
         stored = [r.content for r in db.query(ChatHistory).all() if r.role.value == "assistant"]
     assert stored == out
+
+# --- 轉真人 -------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from sqlalchemy import select  # noqa: E402
+
+from app.agent.handoff import EXPIRED_PREFIX, GENERIC_SCRIPT  # noqa: E402
+from app.agent.llm import ToolCall  # noqa: E402
+from app.models import ConversationMode  # noqa: E402
+
+SAFETY_SCRIPT = "這件事我立刻請店長與您聯繫。"
+RULES = [
+    {"level": "L3", "category": "safety", "trigger": "過敏、送醫",
+     "action": "transfer", "script": SAFETY_SCRIPT},
+    {"level": "L1", "category": "service", "trigger": "上菜太慢",
+     "action": "apologize", "script": "很抱歉讓您有這樣的感受。"},
+]
+
+
+@pytest.fixture
+def rules():
+    with session_scope() as db:
+        c = db.scalar(select(Company).where(Company.slug == "acme"))
+        c.escalation_rules = RULES
+        c.staff_notify_to = "Ustaff"
+
+
+@pytest.fixture
+def line_out(monkeypatch):
+    """回給客人的(reply)與推給店員的(push)記在同一條時間軸上,
+    才驗得了先後順序。"""
+    out = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: out.append(("reply", text)) or True)
+    monkeypatch.setattr("app.routers.webhook.LineClient.push",
+                        lambda self, to, text: out.append(("push", to, text)) or True)
+    return out
+
+
+def _llm(monkeypatch, result=None):
+    calls = []
+
+    def fake(messages, **kw):
+        calls.append(kw)
+        return result or LLMResult("您好", token_count=1, latency_ms=1)
+
+    monkeypatch.setattr("app.routers.webhook.complete", fake)
+    return calls
+
+
+def _mode():
+    with session_scope() as db:
+        u = db.scalar(select(User))
+        return u.mode, u.mode_expires_at
+
+
+def _expire():
+    with session_scope() as db:
+        db.scalar(select(User)).mode_expires_at = (
+            datetime.now(timezone.utc) - timedelta(minutes=1))
+
+
+def _replies(out):
+    return [e[1] for e in out if e[0] == "reply"]
+
+
+def _pushes(out):
+    return [e for e in out if e[0] == "push"]
+
+
+def test_a_keyword_hit_transfers_without_asking_the_model(rules, line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="我朋友吃完過敏送醫了"))
+    assert calls == []
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    (_, to, text), = _pushes(line_out)
+    assert to == "Ustaff"
+    assert "【安全】" in text and "判斷依據:關鍵字「過敏」" in text
+    mode, expires = _mode()
+    assert mode == ConversationMode.HUMAN and expires is not None
+
+
+def test_the_customer_reply_goes_out_before_the_staff_push(rules, line_out, monkeypatch):
+    """reply token 約一分鐘有效,推播沒有時限。"""
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏"))
+    assert [e[0] for e in line_out] == ["reply", "push"]
+
+
+def test_apologize_rules_do_not_transfer(rules, line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="你們上菜太慢了"))
+    assert len(calls) == 1
+    assert _pushes(line_out) == []
+    assert _mode()[0] == ConversationMode.AI
+
+
+def test_messages_during_human_mode_get_no_reply(rules, line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _post(client, _body(text="還在嗎", msg_id="B"))
+    assert calls == []
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    with session_scope() as db:
+        # 存下來:真人在後台看得到,AI 之後接手時也有上下文
+        assert "還在嗎" in [r.content for r in db.query(ChatHistory)]
+
+
+def test_images_during_human_mode_get_no_reply(rules, line_out, monkeypatch):
+    """「我只看得懂文字」會跟店員在後台的回覆混在一起。"""
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _post(client, _image_body(msg_id="IMG"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+
+
+def test_an_expired_human_mode_returns_to_ai_with_a_heads_up(rules, line_out, monkeypatch):
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _expire()
+        _post(client, _body(text="有停車位嗎", msg_id="B"))
+    assert _replies(line_out)[-1] == EXPIRED_PREFIX + "您好"
+    assert _mode() == (ConversationMode.AI, None)
+
+
+def test_an_expired_human_mode_hit_again_has_no_heads_up(rules, line_out, monkeypatch):
+    """「專員不在線上」接「我立刻請店長聯繫」自相矛盾。"""
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _expire()
+        _post(client, _body(text="還是很不舒服要送醫", msg_id="B"))
+    assert _replies(line_out) == [SAFETY_SCRIPT, SAFETY_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_the_model_calling_the_tool_transfers(rules, line_out, monkeypatch):
+    """這是整個設計的核心:沒命中關鍵字,由模型自己決定要轉。"""
+    _llm(monkeypatch, LLMResult("", token_count=1, latency_ms=1, tool_call=ToolCall(
+        "transfer_to_human", {"category": "safety", "reason": "起紅疹疑似過敏反應"})))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒吃完全身起紅疹"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    (_, _, text), = _pushes(line_out)
+    assert "判斷依據:AI —— 起紅疹疑似過敏反應" in text
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_a_tool_call_wins_over_text(rules, line_out, monkeypatch):
+    _llm(monkeypatch, LLMResult("我幫您轉給專人喔", token_count=1, latency_ms=1,
+                                tool_call=ToolCall("transfer_to_human", {"category": "safety"})))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒吃完全身起紅疹"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+
+
+def test_an_unknown_category_from_the_model_still_transfers(rules, line_out, monkeypatch):
+    _llm(monkeypatch, LLMResult("", token_count=1, latency_ms=1,
+                                tool_call=ToolCall("transfer_to_human", {"category": "weather"})))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒吃完全身起紅疹"))
+    assert _replies(line_out) == [GENERIC_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_a_failed_push_keeps_human_mode(rules, monkeypatch):
+    """客人已經被告知「會有人聯繫」,AI 這時又開始回答反而更混亂(spec 決策 6)。"""
+    out = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: out.append(text) or True)
+    monkeypatch.setattr("app.routers.webhook.LineClient.push",
+                        lambda self, to, text: False)
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏"))
+    assert out == [SAFETY_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_no_staff_target_means_no_push_but_still_transfers(rules, line_out, monkeypatch):
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = None
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏"))
+    assert _pushes(line_out) == []
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_the_tool_is_offered_only_when_there_are_transfer_rules(line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="嗨", msg_id="A"))
+    assert calls[0]["tools"] is None
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).escalation_rules = RULES
+    with TestClient(app) as client:
+        _post(client, _body(text="嗨", msg_id="B"))
+    assert calls[1]["tools"][0]["function"]["name"] == "transfer_to_human"
