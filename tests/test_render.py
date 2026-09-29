@@ -28,7 +28,7 @@ def test_prompt_lists_forbidden_phrases():
 def test_prompt_contains_faq_and_escalation():
     p = render_system_prompt(DATA)
     assert "有停車位嗎" in p
-    assert "我立刻請主管與您聯繫" in p
+    assert "過敏 送醫" in p   # 觸發情境還在,模型才知道什麼時候該轉
 
 
 def test_prompt_does_not_leak_jinja_syntax():
@@ -71,3 +71,24 @@ def test_prompt_itself_contains_no_simplified_characters():
     p = render_system_prompt(DATA)
     found = sorted(SIMPLIFIED_ONLY & set(p))
     assert not found, f"prompt 裡出現簡體字:{found}"
+
+
+from app.agent.handoff import TOOL_NAME  # noqa: E402
+
+
+def test_transfer_rules_tell_the_model_to_call_the_tool_not_to_recite_the_script():
+    """prompt 裡留著 script 的話,模型會直接把它念出來而不呼叫工具 ——
+    客人看起來像被轉了,實際上沒切 HUMAN、店員沒收到通知。"""
+    p = render_system_prompt(DATA)
+    assert TOOL_NAME in p
+    assert "category 填 safety" in p
+    assert "我立刻請主管與您聯繫" not in p
+
+
+def test_apologize_rules_still_give_the_script():
+    data = {**DATA, "escalation": [{
+        "level": "L1", "category": "service", "trigger": "上菜太慢",
+        "action": "apologize", "script": "很抱歉讓您久等"}]}
+    p = render_system_prompt(data)
+    assert "很抱歉讓您久等" in p
+    assert TOOL_NAME not in p
