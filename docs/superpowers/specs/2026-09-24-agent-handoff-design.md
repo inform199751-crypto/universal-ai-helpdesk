@@ -213,13 +213,13 @@ def complete(messages, *, tools=None, client=None) -> LLMResult
 ### 新增
 
 - `alembic/versions/<rev>_escalation_rules_and_staff_notify.py`
-- `app/agent/handoff.py` —— 關鍵字比對、工具定義產生、`handoff()`
+- `app/agent/handoff.py` —— 關鍵字比對、工具定義產生、模式切換與通知內容(純函式)
 - `tests/test_handoff.py`
 
 ### 修改
 
 - `app/agent/llm.py` —— `tools` 參數、`ToolCall`、內容判斷放寬
-- `app/routers/webhook.py` —— 三條路的分流
+- `app/routers/webhook.py` —— 三條路的分流、`_handoff()`
 - `app/models/company.py` —— 兩個新欄位
 - `app/cli.py` —— `--staff-notify-to`、`release`、`--reset-history` 重設模式
 - `prompts/system.j2` —— transfer 與 apologize 分開寫

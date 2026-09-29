@@ -19,10 +19,11 @@ class Settings(BaseSettings):
     # LLM
     openrouter_api_key: str
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
-    # 偏好模型滿載時改用這個。openrouter/free 是自動路由 —— OpenRouter
-    # 會自己挑一個當下活著的免費模型。免費供應商滿載是常態,不是例外。
-    openrouter_fallback_model: str = "openrouter/free"
+    # 兩個都必須支援 tool calling(轉真人的 agent 層靠它)。openrouter/free 是
+    # 自動路由:請求帶 tools 時只會分到支援工具的模型。2026-09-24 實測一整天,
+    # 偏好模型每次都限流,真正在答的一直是它 —— 所以直接讓它當主要。
+    openrouter_model: str = "openrouter/free"
+    openrouter_fallback_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     llm_timeout_seconds: float = 45.0
     # 兩個模型「合計」最多等多久。llm_timeout_seconds 管不到這件事:httpx 的
     # timeout 是兩次讀到資料之間的上限,而 OpenRouter 在生成時會持續送空白

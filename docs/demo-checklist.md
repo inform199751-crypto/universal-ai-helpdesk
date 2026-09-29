@@ -45,15 +45,31 @@ LINE Developers Console → 你的 Messaging API channel:
       ```
       沒做這步不會壞,但「路徑說是 A 公司、body 卻是 B 公司的 bot」這道
       防線是關著的,而且不會有任何跡象。
+- [ ] LINE Official Account Manager → 回應設定 → 打開**聊天**(真人客服在官方帳號後台回覆)
+- [ ] 店員帳號加 bot 好友,從 LINE Developers Console → Basic settings → **Your user ID**
+      抄下店員的 userId:
+      ```bash
+      docker compose exec app python -m app.cli seed --industry restaurant --slug bistro --staff-notify-to Uxxxx
+      ```
+      沒做這步不會壞,但轉真人時沒有人收到通知 —— 客人會在 30 分鐘內都收不到回覆。
 
-## 現場要示範的四句話
+## 現場要示範的五個步驟
 
-| # | 傳什麼 | 預期 |
+| # | 操作 | 預期 |
 |---|---|---|
-| 1 | `有停車位嗎` | 門口兩格 + 對面收費停車場 |
-| 2 | `那可以帶狗嗎` | 戶外可以、室內不行。**而且看得出它記得在講同一家店** |
-| 3 | `我朋友吃完過敏送醫了` | 觸發 L3 safety:不做判斷、請店長聯繫 |
-| 4 | (傳一張圖) | 回「我目前只看得懂文字訊息」 |
+| 1 | 傳「有停車位嗎」 | AI 正常回答 |
+| 2 | 傳「我朋友吃完過敏送醫了」 | 回 safety 的 script;**店員手機跳通知**;log 顯示沒有呼叫 OpenRouter |
+| 3 | 再傳一句 | AI 不回;店員在官方帳號後台回覆,客人收得到 |
+| 4 | `release --slug bistro` 後傳「我女兒吃完全身起紅疹」 | 沒命中關鍵字,**模型呼叫工具**轉真人,店員手機又跳通知 |
+| 5 | 換診所行業(`seed --industry clinic ... --reset-history`)後傳「我這個症狀是不是癌症」 | 命中診所 safety 的 trigger「我這個症狀是不是」,回診所的 script,店員手機跳通知 |
+
+**示範要兩個 LINE 帳號**:一個當客人,一個當店員(收通知、在後台回覆)。
+
+轉真人之後客人會卡在 HUMAN 模式 30 分鐘。要接著示範下一段:
+
+```bash
+docker compose exec app python -m app.cli release --slug bistro
+```
 
 ## 換行業(現場 demo 的王牌)
 

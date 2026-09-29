@@ -149,7 +149,12 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 
 **v1 完成,已經接在真的 LINE 官方帳號上跑過;B 階段部署完成 —— 服務跑在
 容器裡、資料在 PostgreSQL、對外是固定網址,設計上容器退出會自動重啟
-(`restart: unless-stopped`)。** 163 個自動測試全過、1 個跳過,SQLite 與
+(`restart: unless-stopped`)。**
+
+轉真人已 agent 化:關鍵字規則保底,模型透過 `transfer_to_human` 工具判斷換句話說的情況;
+轉了之後 AI 停止回答、推播通知店員、30 分鐘後自動交還。
+
+163 個自動測試全過、1 個跳過,SQLite 與
 PostgreSQL 各跑一輪(跳過的兩邊剛好相反:一邊是對方資料庫專屬的行為,
 證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
 
