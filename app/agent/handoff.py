@@ -7,10 +7,17 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from app.line.client import truncate_for_line
 from app.models import ConversationMode, User
+
+_WHITESPACE_RE = re.compile(r"\s+")
+# reason 是模型自己造的句子,客人打得出來的東西都可能混進去(換行、超長
+# 字串)。給店員看的訊息不能被拿來偽裝成另一則系統通知,也不能洗版。
+REASON_MAX_LENGTH = 60
 
 TOOL_NAME = "transfer_to_human"
 # 模型呼叫了工具、類別卻不認得時回的話。不能沿用任何一類的 script ——
@@ -69,8 +76,14 @@ def build_tool(rules: list[dict]) -> dict | None:
 
 
 def decision_from_tool(rules: list[dict], arguments: dict) -> Decision:
-    """模型呼叫了工具。類別不認得也照樣轉 —— 模型已經表達「需要真人」。"""
-    reason = str(arguments.get("reason") or "").strip() or "(模型沒有說明)"
+    """模型呼叫了工具。類別不認得也照樣轉 —— 模型已經表達「需要真人」。
+
+    reason 是模型自己造句、客人打得出來的東西都可能混進去(prompt
+    injection 的表面):換行會在店員手機上偽裝成另一則系統訊息,超長
+    字串則是洗版。收成一行、砍到 REASON_MAX_LENGTH 字再放進 basis。
+    """
+    raw_reason = str(arguments.get("reason") or "").strip()
+    reason = _WHITESPACE_RE.sub(" ", raw_reason)[:REASON_MAX_LENGTH] or "(模型沒有說明)"
     category = arguments.get("category")
     for rule in _transfer_rules(rules):
         if rule.get("category") == category:
@@ -143,4 +156,7 @@ def customer_label(user: User) -> str:
 
 def staff_message(decision: Decision, customer: str, text: str) -> str:
     label = CATEGORY_LABELS.get(decision.category or "", "轉真人")
-    return f"【{label}】{customer}\n{text[:100]}\n判斷依據:{decision.basis}"
+    msg = f"【{label}】{customer}\n{text[:100]}\n判斷依據:{decision.basis}"
+    # customer 來自客人的 LINE display_name,長度不是我們能控制的欄位 ——
+    # 這也是一則送去 LINE 的文字訊息,超過上限一樣會整則失敗。
+    return truncate_for_line(msg)

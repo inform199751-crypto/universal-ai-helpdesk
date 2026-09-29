@@ -181,6 +181,27 @@ def test_staff_message_for_an_unknown_category():
     assert msg.startswith("【轉真人】")
 
 
+def test_staff_message_is_truncated_when_it_would_exceed_the_line_limit():
+    """F3c:staff_message 也是送去 LINE 的一則文字訊息,超過上限一樣會整則
+    失敗 —— customer_label 來自客人的 LINE display_name,不是我們能控制
+    長度的欄位。"""
+    d = Decision("safety", "s", "AI —— 正常原因")
+    msg = staff_message(d, "客" * 6000, "嗨")
+    assert len(msg) <= 5000
+    assert msg.endswith("(訊息過長已截斷)")
+
+
+def test_reason_with_newlines_and_over_60_chars_is_collapsed_and_capped():
+    """reason 是模型自己造句、客人打得出來的東西都可能混進去 —— 換行會
+    在店員手機上偽裝成另一則系統訊息,超長字串則是洗版。這裡收成一行、
+    砍到 60 字再放進 basis。"""
+    reason = "第一行\n第二行\n\n" + "字" * 100
+    d = decision_from_tool(RULES, {"category": "legal", "reason": reason})
+    assert "\n" not in d.basis
+    reason_part = d.basis.split("AI —— ", 1)[1]
+    assert len(reason_part) <= 60
+
+
 def test_the_expired_prefix_is_a_complete_sentence():
     """它會直接接在模型答案前面,少了句號兩句話會黏在一起。"""
     assert EXPIRED_PREFIX.endswith("。")
