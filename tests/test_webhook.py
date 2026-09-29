@@ -448,6 +448,36 @@ def test_an_expired_human_mode_hit_again_has_no_heads_up(rules, line_out, monkey
     assert _mode()[0] == ConversationMode.HUMAN
 
 
+def test_an_expired_human_mode_with_a_model_failure_gets_fallback_without_the_prefix(
+        rules, line_out, monkeypatch):
+    """F3g (1):模型失敗時送的是 fallback,不是模型的答案 —— 既有規則是
+    「只有模型真的回了答案才加前綴」,fallback 前面接「專員目前不在線上」
+    語意不通,這裡補上這個交叉情況的測試。"""
+    monkeypatch.setattr("app.routers.webhook.complete",
+                        lambda messages, **kw: (_ for _ in ()).throw(LLMError("boom")))
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _expire()
+        _post(client, _body(text="有停車位嗎", msg_id="B"))
+    assert _replies(line_out)[-1] == "我這邊剛剛連線有點問題,可以再問一次嗎?"
+
+
+def test_an_expired_human_mode_with_a_tool_call_transfers_again_without_the_prefix(
+        rules, line_out, monkeypatch):
+    """F3g (2):過期後沒命中關鍵字,但模型自己呼叫工具轉真人 —— 一樣不該
+    加「專員不在線上」的前綴(script 已經表達會有人聯繫),而且要重新進
+    HUMAN 模式。"""
+    _llm(monkeypatch, LLMResult("", token_count=1, latency_ms=1, tool_call=ToolCall(
+        "transfer_to_human", {"category": "safety", "reason": "還是不舒服"})))
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _expire()
+        _post(client, _body(text="我女兒吃完全身起紅疹", msg_id="B"))
+    assert _replies(line_out) == [SAFETY_SCRIPT, SAFETY_SCRIPT]
+    mode, expires = _mode()
+    assert mode == ConversationMode.HUMAN and expires is not None
+
+
 def test_the_model_calling_the_tool_transfers(rules, line_out, monkeypatch):
     """這是整個設計的核心:沒命中關鍵字,由模型自己決定要轉。"""
     _llm(monkeypatch, LLMResult("", token_count=1, latency_ms=1, tool_call=ToolCall(
@@ -487,6 +517,26 @@ def test_a_failed_push_keeps_human_mode(rules, monkeypatch):
     _llm(monkeypatch)
     with TestClient(app) as client:
         _post(client, _body(text="過敏"))
+    assert out == [SAFETY_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_a_push_that_raises_still_leaves_the_customer_with_exactly_one_message(
+        rules, monkeypatch):
+    """F3a:push 不是回 False,是直接丟例外(連線爆炸、SDK 內部錯誤都可能
+    這樣)。跟回 False 的情況要有一樣的結果 —— 客人已經收到 script,
+    不能因為店員通知爆炸就再送一句 fallback,那會變成兩句互相矛盾的話。"""
+    out = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: out.append(text) or True)
+
+    def boom_push(self, to, text):
+        raise RuntimeError("push 端點連線爆炸")
+
+    monkeypatch.setattr("app.routers.webhook.LineClient.push", boom_push)
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        assert _post(client, _body(text="過敏")).status_code == 200
     assert out == [SAFETY_SCRIPT]
     assert _mode()[0] == ConversationMode.HUMAN
 
@@ -546,6 +596,22 @@ def test_the_model_reciting_the_script_as_plain_text_is_treated_as_a_handoff(
     (_, _, text), = _pushes(line_out)
     assert "判斷依據:AI —— 念出轉接話術" in text
     assert _mode()[0] == ConversationMode.HUMAN
+
+
+# --- F2:店員帳號不該被當成客人 ----------------------------------------------
+
+def test_a_message_from_the_staff_account_gets_no_reply_and_no_handoff(
+        rules, line_out, monkeypatch):
+    """店員帳號加了 bot 好友、對 bot 打字(手滑或測試)不該被當客人處理 ——
+    沒有 AI 回答的必要,更不能被規則層轉真人、再推播通知自己一次。"""
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", user="Ustaff"))
+    assert calls == []
+    assert line_out == []
+    with session_scope() as db:
+        staff_user = db.scalar(select(User).where(User.line_user_id == "Ustaff"))
+        assert staff_user is not None and staff_user.mode == ConversationMode.AI
 
 
 def test_the_tool_is_offered_only_when_there_are_transfer_rules(line_out, monkeypatch):

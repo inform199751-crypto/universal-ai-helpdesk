@@ -147,6 +147,14 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 logger.info("重送的訊息 %s,略過", line_message_id)
                 return
 
+            # F2:店員帳號加了 bot 好友後,對 bot 打字(手滑、測試)不該被
+            # 當成客人訊息 —— 沒有 AI 回答的必要,更不能被規則層轉真人,
+            # 變成推播通知去吵自己。訊息本身照樣留在 chat_histories 裡
+            # (上面已經寫入),只是到此為止,不觸發回覆或任何狀態變更。
+            if company.staff_notify_to and line_user_id == company.staff_notify_to:
+                logger.info("%s 是店員帳號,不當客人訊息處理", line_user_id)
+                return
+
             # HUMAN 模式要在非文字分支之前判斷:真人接手期間客人傳圖片,
             # 也不該冒出一句「我只看得懂文字」—— 會跟店員的回覆混在一起。
             now = datetime.now(timezone.utc)
