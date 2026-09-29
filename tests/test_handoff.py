@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 from app.agent.handoff import (
     EXPIRED_PREFIX, GENERIC_SCRIPT, TOOL_NAME, Decision, as_utc, build_tool,
-    customer_label, decision_from_tool, enter_human_mode, is_still_human,
-    match_keyword, return_to_ai, staff_message,
+    customer_label, decision_from_recited_script, decision_from_tool,
+    enter_human_mode, is_still_human, match_keyword, return_to_ai, staff_message,
 )
 from app.models import ConversationMode, User
 
@@ -88,6 +88,31 @@ def test_an_unknown_category_still_transfers_with_the_generic_script():
 def test_empty_arguments_still_transfer():
     """Task 1 在參數 JSON 壞掉時給的就是 {}。"""
     assert decision_from_tool(RULES, {}).script == GENERIC_SCRIPT
+
+
+# --- 安全網:模型把 script 念出來,而不是呼叫工具(F1b) --------------------
+
+def test_reciting_a_transfer_script_verbatim_is_treated_as_a_handoff():
+    """模型該呼叫工具卻只是把 script 念出來:客人以為已經轉接,實際上
+    HUMAN 沒切、店員沒收到通知 —— 這裡補一道安全網,把它當成真的轉了。"""
+    d = decision_from_recited_script(RULES, "這件事我立刻請店長與您聯繫。")
+    assert d == Decision("safety", "這件事我立刻請店長與您聯繫。",
+                         "AI —— 念出轉接話術")
+
+
+def test_reciting_with_surrounding_whitespace_still_counts():
+    """比對用 verbatim(去頭尾空白)—— 模型偶爾會多帶換行。"""
+    d = decision_from_recited_script(RULES, "\n這件事我立刻請店長與您聯繫。\n")
+    assert d is not None and d.category == "safety"
+
+
+def test_a_normal_answer_is_not_mistaken_for_a_recited_script():
+    assert decision_from_recited_script(RULES, "門口兩格車位,滿了對面有收費停車場。") is None
+
+
+def test_reciting_an_apologize_script_never_counts():
+    """L1 apologize 本來就該由模型自己說,不是轉真人的訊號。"""
+    assert decision_from_recited_script(RULES, "很抱歉讓您有這樣的感受。") is None
 
 
 # --- 模式與時間 ---------------------------------------------------------------

@@ -78,6 +78,35 @@ def decision_from_tool(rules: list[dict], arguments: dict) -> Decision:
     return Decision(None, GENERIC_SCRIPT, f"AI —— {reason}")
 
 
+RECITED_HISTORY_MARKER = "(這一則已轉給真人處理)"
+
+
+def is_handoff_script(rules: list[dict], content: str) -> bool:
+    """這一列歷史紀錄的內容,是不是「轉真人」當下回給客人的那句話 ——
+    涵蓋 transfer 規則各自的 script,以及類別猜錯時用的通用句
+    GENERIC_SCRIPT。F1a 用它決定歷史紀錄裡哪些列要換成標記:原封不動
+    餵回模型的話,模型會把「上次這樣講」當成範例學著念,而不是呼叫工具。
+    """
+    return content in {r["script"] for r in _transfer_rules(rules)} | {GENERIC_SCRIPT}
+
+
+def decision_from_recited_script(rules: list[dict], text: str) -> Decision | None:
+    """安全網:模型該呼叫工具卻只是照 prompt 把 script 念出來 ——
+    客人聽起來像已經被轉接,實際上 HUMAN 沒切、店員沒收到通知(這是
+    F1 修的失敗模式:歷史紀錄裡的舊 script 教壞了下一次的模型)。
+
+    只認 transfer 規則的 script,verbatim(去頭尾空白後比對)——
+    apologize 的道歉話本來就該由模型自己說,不是轉真人的訊號。
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+    for rule in _transfer_rules(rules):
+        if rule["script"] in stripped:
+            return Decision(rule.get("category"), rule["script"], "AI —— 念出轉接話術")
+    return None
+
+
 def as_utc(value: datetime | None) -> datetime | None:
     """SQLite 讀回來的 datetime 沒有時區(實測 tzinfo=None),直接跟
     datetime.now(timezone.utc) 比會 TypeError。PostgreSQL 讀回來有時區,

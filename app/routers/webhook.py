@@ -16,8 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.agent.handoff import (
-    EXPIRED_PREFIX, Decision, build_tool, customer_label, decision_from_tool,
-    enter_human_mode, is_still_human, match_keyword, return_to_ai, staff_message,
+    EXPIRED_PREFIX, RECITED_HISTORY_MARKER, Decision, build_tool, customer_label,
+    decision_from_recited_script, decision_from_tool, enter_human_mode,
+    is_handoff_script, is_still_human, match_keyword, return_to_ai, staff_message,
 )
 from app.agent.llm import LLMError, complete
 from app.agent.prompt import build_messages
@@ -189,7 +190,14 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 history = [
                     {"role": "assistant" if r.role in (ChatRole.ASSISTANT,
                                                        ChatRole.HUMAN_AGENT) else "user",
-                     "content": r.content}
+                     # F1a:上一輪轉真人時存的 script,原封不動餵回去的話,
+                     # 模型會把「上次這樣講」當範例學著念,而不是呼叫工具
+                     # (客人以為被轉了,實際上 HUMAN 沒切)。DB 那一列本身
+                     # 不能改 —— 客人當時真的看到那句話。
+                     "content": (RECITED_HISTORY_MARKER
+                                if r.role == ChatRole.ASSISTANT
+                                and is_handoff_script(rules, r.content)
+                                else r.content)}
                     for r in reversed(rows)
                 ]
                 system_prompt = company.system_prompt
@@ -231,6 +239,15 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             _handoff(decision=decision_from_tool(rules, result.tool_call.arguments),
                      **handoff_args)
             return
+
+        # F1b 安全網:模型沒呼叫工具,卻照 prompt 把 script 整句念出來 ——
+        # 客人聽起來像被轉了,實際上沒切 HUMAN、店員也沒收到通知,是 spec
+        # §四警告的失敗模式。當成轉真人處理,不要照樣把 script 當一般答案送出。
+        if result is not None:
+            recited = decision_from_recited_script(rules, result.text)
+            if recited is not None:
+                _handoff(decision=recited, **handoff_args)
+                return
 
         # 只有模型真的回了答案才加:fallback 前面接「專員不在線上」沒有意義
         if result is not None:

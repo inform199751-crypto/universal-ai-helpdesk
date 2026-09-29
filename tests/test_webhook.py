@@ -501,6 +501,53 @@ def test_no_staff_target_means_no_push_but_still_transfers(rules, line_out, monk
     assert _mode()[0] == ConversationMode.HUMAN
 
 
+# --- F1:歷史紀錄裡的舊 script 不能教壞下一次的模型 --------------------------
+
+def test_a_previously_recited_handoff_script_is_masked_in_the_messages_sent_to_the_model(
+        rules, monkeypatch):
+    """F1a:上一輪轉真人時存進 chat_histories 的 script,如果原封不動餵回
+    模型當「歷史」,模型會學著下次也照樣念一次 script 而不呼叫工具 ——
+    客人以為被轉了,實際上沒有。DB 裡的紀錄本身不能改(客人當時真的
+    看到那句話),只在送給模型的 messages 裡替換成標記。"""
+    seen = []
+
+    def fake_complete(messages, **kw):
+        seen.append(messages)
+        return LLMResult("目前這邊還在協助您,請稍候。", token_count=1, latency_ms=1)
+
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: True)
+    monkeypatch.setattr("app.routers.webhook.LineClient.push",
+                        lambda self, to, text: True)
+    monkeypatch.setattr("app.routers.webhook.complete", fake_complete)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _expire()
+        _post(client, _body(text="還在嗎", msg_id="B"))
+
+    contents = [m["content"] for m in seen[-1]]
+    assert SAFETY_SCRIPT not in contents
+    assert "(這一則已轉給真人處理)" in contents
+
+    # DB 裡的紀錄本身要保持原樣 —— 客人當時真的看到的是 script,不是標記
+    with session_scope() as db:
+        stored = [r.content for r in db.query(ChatHistory).order_by(ChatHistory.id)]
+    assert SAFETY_SCRIPT in stored
+
+
+def test_the_model_reciting_the_script_as_plain_text_is_treated_as_a_handoff(
+        rules, line_out, monkeypatch):
+    """F1b 安全網:模型沒呼叫工具,卻照 prompt 把 script 整句念出來 ——
+    客人聽起來像被轉了,實際上 HUMAN 沒切、店員沒收到通知。"""
+    _llm(monkeypatch, LLMResult(SAFETY_SCRIPT, token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒吃完全身起紅疹"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    (_, _, text), = _pushes(line_out)
+    assert "判斷依據:AI —— 念出轉接話術" in text
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
 def test_the_tool_is_offered_only_when_there_are_transfer_rules(line_out, monkeypatch):
     calls = _llm(monkeypatch)
     with TestClient(app) as client:
