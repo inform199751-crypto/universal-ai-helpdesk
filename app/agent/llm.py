@@ -57,9 +57,17 @@ def _parse_tool_call(message: dict) -> ToolCall | None:
     if not calls:
         return None
     fn = calls[0].get("function") or {}
-    try:
-        arguments = json.loads(fn.get("arguments") or "{}")
-    except ValueError:
+    raw_arguments = fn.get("arguments")
+    # arguments 可能已經是字典(模型或上游直接傳的),可能是 JSON 字串,
+    # 也可能是其他型別。只有字典才是有效的,其他都降級到 {}。
+    if isinstance(raw_arguments, dict):
+        arguments = raw_arguments
+    elif isinstance(raw_arguments, str):
+        try:
+            arguments = json.loads(raw_arguments)
+        except ValueError:
+            arguments = {}
+    else:
         arguments = {}
     if not isinstance(arguments, dict):
         arguments = {}

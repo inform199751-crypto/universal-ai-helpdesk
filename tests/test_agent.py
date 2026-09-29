@@ -326,3 +326,17 @@ def test_no_text_and_no_tool_call_is_still_a_failure():
     empty = lambda req: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
     with pytest.raises(LLMError):
         complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(empty))
+
+
+def test_tool_arguments_already_an_object_are_used_as_is():
+    """arguments 已經是字典時,就直接用——模型的意圖很清楚,不該丟掉。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(arguments={"category": "safety"})))
+    assert r.tool_call == ToolCall("transfer_to_human", {"category": "safety"})
+
+
+def test_tool_arguments_of_the_wrong_type_become_empty():
+    """arguments 是其他型別(陣列、數字等)時就當成失敗解析,回 {}。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(arguments=[1, 2])))
+    assert r.tool_call == ToolCall("transfer_to_human", {})
