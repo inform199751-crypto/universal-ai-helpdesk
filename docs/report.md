@@ -173,8 +173,9 @@ Service temporarily overloaded", "code": 503}}
 
 只看 `status_code` 會判成成功,然後把空字串當答案送給客人。判斷標準必須是
 **「有沒有真的拿到 message 內容」**。免費模型的供應商滿載是常態不是例外 ——
-實測單獨打一次就踩到。現在偏好模型失敗會自動換 `openrouter/free` 自動路由
-重試一次,客人不會看到錯誤訊息。
+實測單獨打一次就踩到。現在主要模型 `openrouter/free`(自動路由,帶 tools 時
+只會分到支援工具的模型)失敗會自動換備用的
+`nvidia/nemotron-3-super-120b-a12b:free` 重試一次,客人不會看到錯誤訊息。
 
 ### 2. 在 PowerShell 主控台按 Ctrl+V 不是貼上
 

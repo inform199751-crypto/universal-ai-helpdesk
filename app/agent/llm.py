@@ -6,8 +6,9 @@
   2. 推理模型會把英文內部思考當答案唸出來 —— 要 reasoning.exclude。
   3. max_tokens 太小會讓答案被截斷,看起來像模型講到一半斷線。
   4. 免費模型的供應商滿載是常態,不是例外(實測單獨打一次就踩到)。
-     偏好模型失敗就換 openrouter/free 自動路由再試一次,不要直接讓客人
-     吃到 fallback 訊息。
+     主要模型是 openrouter/free 自動路由(帶 tools 時只會分到支援工具的
+     模型),它失敗就換 nvidia/nemotron-3-super-120b-a12b:free 再試一次,
+     不要直接讓客人吃到 fallback 訊息。
 """
 
 from __future__ import annotations

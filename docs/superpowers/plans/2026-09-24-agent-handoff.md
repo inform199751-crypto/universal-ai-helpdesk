@@ -1630,7 +1630,7 @@ $t = [IO.File]::ReadAllText($p)
 $n = $t.Replace("OPENROUTER_MODEL=z-ai/glm-5.2:free", "OPENROUTER_MODEL=openrouter/free")
 if ($n -eq $t) { throw "沒有換到 —— 先看 .env 裡 OPENROUTER_MODEL 現在是什麼" }
 [IO.File]::WriteAllText($p, $n, (New-Object Text.UTF8Encoding $false))
-Select-String -Path .env -Pattern "^OPENROUTER_" -Encoding utf8 | ForEach-Object { $_.Line }
+Select-String -Path .env -Pattern "^OPENROUTER_(MODEL|FALLBACK_MODEL)=" -Encoding utf8 | ForEach-Object { $_.Line }
 ```
 
 - [ ] **Step 4: 跑測試、部署、確認 PostgreSQL 遷移**

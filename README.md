@@ -54,9 +54,9 @@ sequenceDiagram
     Note over B: 去重靠 line_message_id 的 unique 索引<br/>LINE 重送也只會回答一次
     B->>L: 叫出「正在輸入」動畫
     B->>O: 人設 + 最近十則對話 + 這一句
-    alt 偏好模型滿載
+    alt 主要模型(openrouter/free)滿載
         O-->>B: HTTP 200,但 body 包著 error
-        B->>O: 改用 openrouter/free 重試
+        B->>O: 改用備用模型 nemotron-3-super 重試
     end
     O-->>B: 答案
     B->>L: reply 優先,失敗改 push
@@ -154,9 +154,9 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 轉真人已 agent 化:關鍵字規則保底,模型透過 `transfer_to_human` 工具判斷換句話說的情況;
 轉了之後 AI 停止回答、推播通知店員、30 分鐘後自動交還。
 
-163 個自動測試全過、1 個跳過,SQLite 與
-PostgreSQL 各跑一輪(跳過的兩邊剛好相反:一邊是對方資料庫專屬的行為,
-證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
+242 個自動測試全過、1 個跳過,SQLite 與
+PostgreSQL 各跑一輪(CI 兩個 job 都會跑;跳過的兩邊剛好相反:一邊是對方資料庫
+專屬的行為,證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
 
 真機驗證過的行為:
 

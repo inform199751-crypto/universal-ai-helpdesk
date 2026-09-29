@@ -46,12 +46,26 @@ LINE Developers Console → 你的 Messaging API channel:
       沒做這步不會壞,但「路徑說是 A 公司、body 卻是 B 公司的 bot」這道
       防線是關著的,而且不會有任何跡象。
 - [ ] LINE Official Account Manager → 回應設定 → 打開**聊天**(真人客服在官方帳號後台回覆)
-- [ ] 店員帳號加 bot 好友,從 LINE Developers Console → Basic settings → **Your user ID**
-      抄下店員的 userId:
+- [ ] **店員 = 登入 LINE Developers Console 的那個帳號。** Console → Basic settings →
+      **Your user ID** 顯示的是「目前登入 Console 的帳號」的 userId,不是客人的、
+      也不是 bot 的。所以那個帳號就是店員;**客人必須用另一個 LINE 帳號**。
+      店員帳號先加 bot 好友(不加,推播送不到),抄下那串 userId,
+      跑這支 seed。它是遷移之後**第一支完整的 seed**,`--reset-history` 不能省:
+      目前線上那一列是電商(`ecommerce`),換成餐飲時不清的話,舊對話和舊的轉接話術
+      會留在最近十則的視窗裡,模型看到會學著念話術、而不是呼叫工具:
       ```bash
-      docker compose exec app python -m app.cli seed --industry restaurant --slug bistro --staff-notify-to Uxxxx
+      docker compose exec app python -m app.cli seed --industry restaurant --slug bistro --staff-notify-to Uxxxx --reset-history
       ```
-      沒做這步不會壞,但轉真人時沒有人收到通知 —— 客人會在 30 分鐘內都收不到回覆。
+      **不做的後果(不是「不會壞」):**
+      - 遷移剛跑完、還沒跑過任何一次 seed:`escalation_rules` 是空的,
+        **什麼都不會轉** —— 規則層和工具都沒啟用,行為跟改版前一樣。要 seed 一次才會打開。
+      - seed 跑了、但沒給 `--staff-notify-to`:轉真人**照樣發生**(客人收到話術、進 HUMAN 模式),
+        但**沒有任何人收到通知**,客人會在 30 分鐘內都收不到回覆。log 只有一行 warning。
+- [ ] **店員回覆要到 LINE Official Account Manager 的聊天(網頁或手機 app)去回,
+      千萬不要在通知跳出來的 bot 對話框裡回。** 推播通知出現在「店員帳號 ↔ bot」那個
+      對話框,在那裡打字只會送進 bot 的 webhook,客人永遠收不到。
+      另外,**店員帳號傳給 bot 的訊息不會被回應**(程式擋掉,不當客人處理)——
+      所以店員帳號不能拿來當客人測試。
 
 ## 現場要示範的五個步驟
 
@@ -63,7 +77,8 @@ LINE Developers Console → 你的 Messaging API channel:
 | 4 | `release --slug bistro` 後傳「我女兒吃完全身起紅疹」 | 沒命中關鍵字,**模型呼叫工具**轉真人,店員手機又跳通知 |
 | 5 | 換診所行業(`seed --industry clinic ... --reset-history`)後傳「我這個症狀是不是癌症」 | 命中診所 safety 的 trigger「我這個症狀是不是」,回診所的 script,店員手機跳通知 |
 
-**示範要兩個 LINE 帳號**:一個當客人,一個當店員(收通知、在後台回覆)。
+**示範要兩個 LINE 帳號**:一個當客人,一個當店員(= 登入 Console 的帳號;收通知、
+到官方帳號後台的聊天回覆)。兩個不能是同一個帳號 —— 店員帳號傳的訊息不會被回應。
 
 轉真人之後客人會卡在 HUMAN 模式 30 分鐘。要接著示範下一段:
 
