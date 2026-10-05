@@ -22,7 +22,7 @@ python -m app.cli seed --industry clinic --slug bistro --reset-history
 ```mermaid
 flowchart TD
     Y["industries 資料夾<br/>五份 YAML<br/>company · faq · policies<br/>escalation · glossary"]
-    V{"validate<br/>八條規則"}
+    V{"validate<br/>十條規則"}
     E["ERROR — 資料壞了<br/>擋下,不寫入資料庫"]
     B["BLOCK — 不擋<br/>列為導入會議議程"]
     J["Jinja2<br/>組成 system_prompt"]
