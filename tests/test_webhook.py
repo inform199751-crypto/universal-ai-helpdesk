@@ -34,7 +34,8 @@ def _body(text="你好", msg_id="M1", user="U1", destination="Ubot0001"):
         "destination": destination,
         "events": [{
             "type": "message",
-            "message": {"type": "text", "id": msg_id, "text": text},
+            "message": {"type": "text", "id": msg_id, "text": text,
+                        "markAsReadToken": "read-" + msg_id},
             "webhookEventId": "E" + msg_id,
             "deliveryContext": {"isRedelivery": False},
             "timestamp": 1692000000000,
@@ -61,6 +62,18 @@ def loading_calls(monkeypatch):
     calls = []
     monkeypatch.setattr("app.routers.webhook.LineClient.show_loading",
                         lambda self, uid, seconds=20: calls.append(uid) or True)
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def read_calls(monkeypatch):
+    """mark_as_read 一律擋掉並記錄 —— 理由跟 loading_calls 一樣:測試不碰網路。
+
+    _body / _image_body 都帶 markAsReadToken,跟官方帳號開了「聊天」之後
+    LINE 真正送來的事件一樣。"""
+    calls = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.mark_as_read",
+                        lambda self, token: calls.append(token) or True)
     return calls
 
 
@@ -201,7 +214,8 @@ def _image_body(msg_id="M9", user="U1"):
     return json.dumps({
         "destination": "Ubot0001",
         "events": [{"type": "message",
-                    "message": {"type": "image", "id": msg_id},
+                    "message": {"type": "image", "id": msg_id,
+                                "markAsReadToken": "read-" + msg_id},
                     "webhookEventId": "E" + msg_id,
                     "deliveryContext": {"isRedelivery": False},
                     "timestamp": 1692000000000,
@@ -681,3 +695,100 @@ def test_seeding_the_real_restaurant_yaml_then_a_keyword_message_transfers(
     (_, to, text), = _pushes(line_out)
     assert to == "Ustaff" and "【安全】" in text
     assert _mode()[0] == ConversationMode.HUMAN
+
+
+# --- 標示已讀 ----------------------------------------------------------------
+# 官方帳號開了「聊天」之後,訊息要真人在後台點開才會已讀,AI 回了客人
+# 那邊還是「未讀」。規則:AI 自己處理完、真的回了客人才標;轉真人與
+# HUMAN 模式留給真人 —— 客人看到「未讀」,代表真人還沒看到,比較誠實。
+
+def test_an_ai_answer_marks_the_message_as_read(sent, read_calls):
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="R1"))
+    assert read_calls == ["read-R1"]
+
+
+def test_a_non_text_reply_marks_the_message_as_read(sent, read_calls):
+    with TestClient(app) as client:
+        _post(client, _image_body(msg_id="IMG-R"))
+    assert read_calls == ["read-IMG-R"]
+
+
+def test_a_fallback_reply_marks_the_message_as_read(monkeypatch, read_calls):
+    """模型失敗時客人還是收到了一句話 —— 這則訊息是處理過的。"""
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: True)
+    monkeypatch.setattr("app.routers.webhook.complete",
+                        lambda messages, **kw: (_ for _ in ()).throw(LLMError("boom")))
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="R2"))
+    assert read_calls == ["read-R2"]
+
+
+def test_a_keyword_handoff_leaves_the_message_unread(rules, line_out, monkeypatch,
+                                                     read_calls):
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="我朋友吃完過敏送醫了"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    assert read_calls == []
+
+
+def test_a_tool_call_handoff_leaves_the_message_unread(rules, line_out, monkeypatch,
+                                                       read_calls):
+    _llm(monkeypatch, LLMResult("", token_count=1, latency_ms=1, tool_call=ToolCall(
+        "transfer_to_human", {"category": "safety", "reason": "起紅疹"})))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒吃完全身起紅疹"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    assert read_calls == []
+
+
+def test_messages_during_human_mode_stay_unread(rules, line_out, monkeypatch, read_calls):
+    """真人在後台點開才會已讀 —— AI 不能替還沒看到的真人說「我看到了」。"""
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="過敏", msg_id="A"))
+        _post(client, _body(text="還在嗎", msg_id="B"))
+        _post(client, _image_body(msg_id="IMG-H"))
+    assert read_calls == []
+
+
+def test_a_message_from_the_staff_account_stays_unread(rules, line_out, monkeypatch,
+                                                       read_calls):
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="嗨", user="Ustaff"))
+    assert read_calls == []
+
+
+def test_the_message_is_marked_read_only_after_the_reply_goes_out(monkeypatch):
+    """先標已讀再回答的話,模型最後決定轉真人時,訊息早就被標成已讀了。"""
+    timeline = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: timeline.append("reply") or True)
+    monkeypatch.setattr("app.routers.webhook.LineClient.mark_as_read",
+                        lambda self, token: timeline.append("read") or True)
+    monkeypatch.setattr("app.routers.webhook.complete",
+                        lambda messages, **kw: LLMResult("您好", token_count=1,
+                                                         latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body())
+    assert timeline == ["reply", "read"]
+
+
+def test_a_mark_as_read_failure_does_not_touch_the_answer(monkeypatch):
+    """已讀是錦上添花。它爆炸時不能被最外層的 except 接走 —— 那會在
+    正確答案之後再送一句 fallback。"""
+    out = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.send",
+                        lambda self, rt, uid, text: out.append(text) or True)
+    monkeypatch.setattr("app.routers.webhook.LineClient.mark_as_read",
+                        lambda self, token: (_ for _ in ()).throw(
+                            RuntimeError("markAsRead 端點掛了")))
+    monkeypatch.setattr("app.routers.webhook.complete",
+                        lambda messages, **kw: LLMResult("您好", token_count=1,
+                                                         latency_ms=1))
+    with TestClient(app) as client:
+        assert _post(client, _body()).status_code == 200
+    assert out == ["您好"]

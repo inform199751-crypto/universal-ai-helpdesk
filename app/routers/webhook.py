@@ -101,13 +101,15 @@ async def line_webhook(slug: str, request: Request, background: BackgroundTasks)
             message_type=message.get("type") or "",
             line_message_id=message.get("id") or "",
             reply_token=event.get("replyToken") or "",
+            # 官方帳號開了「聊天」時 LINE 才會附上;沒開時訊息本來就自動已讀
+            mark_as_read_token=message.get("markAsReadToken") or "",
         )
     return {"status": "ok"}
 
 
 def process_text_event(*, company_id: str, line_user_id: str, text: str,
                        message_type: str, line_message_id: str,
-                       reply_token: str) -> None:
+                       reply_token: str, mark_as_read_token: str = "") -> None:
     """背景任務。
 
     只收純值,不收 ORM 物件 —— FastAPI 的 Depends(get_db) session 在
@@ -174,6 +176,7 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                                    role=ChatRole.ASSISTANT,
                                    content=NON_TEXT_REPLY))
                 client.send(reply_token, line_user_id, NON_TEXT_REPLY)
+                _mark_read(client, mark_as_read_token)
                 return
 
             user_pk = user.id
@@ -272,10 +275,26 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                                token_count=tokens, latency_ms=latency))
 
         client.send(reply_token, line_user_id, answer)
+        # 送出之後才標:先標的話,模型最後決定轉真人時訊息早就已讀了。
+        # 轉真人與 HUMAN 模式走不到這裡 —— 那些留給真人在後台點開才已讀,
+        # 客人看到「未讀」代表真人還沒看到。
+        _mark_read(client, mark_as_read_token)
     except Exception:
         # 沉默是唯一不被接受的失敗模式
         logger.exception("背景處理爆炸,嘗試送出 fallback")
         _send_last_resort_fallback(company_id, line_user_id, reply_token)
+
+
+def _mark_read(client: LineClient, mark_as_read_token: str) -> None:
+    """跟「正在輸入」一樣是裝飾性的呼叫,不該有能力毀掉主流程。
+
+    自己包一層 try:答案已經送出去了,這裡爆炸被最外層的 except 接走的話,
+    客人會在正確答案之後又收到一句 fallback。
+    """
+    try:
+        client.mark_as_read(mark_as_read_token)
+    except Exception:  # noqa: BLE001
+        logger.warning("標示已讀沒成功,不影響回覆", exc_info=True)
 
 
 def _handoff(*, company_id: str, user_pk: str, client: LineClient,

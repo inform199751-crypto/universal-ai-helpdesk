@@ -118,3 +118,34 @@ def test_reply_still_requires_200():
     """202 只對 loading 那支端點成立。reply 回 202 不代表送出去了,
     不可以因為放寬了一支就連帶放寬全部。"""
     assert _client(lambda req: httpx.Response(202, json={})).reply("rt", "hi") is False
+
+
+# --- 標示已讀 ----------------------------------------------------------------
+
+def test_mark_as_read_posts_the_token_to_the_mark_as_read_endpoint():
+    seen = {}
+
+    def handler(request):
+        import json
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    assert _client(handler).mark_as_read("rt-token-1") is True
+    # 路徑以 LINE 官方文件為準:/v2/bot/chat/markAsRead,body 只帶 markAsReadToken
+    assert seen["path"] == "/v2/bot/chat/markAsRead"
+    assert seen["body"] == {"markAsReadToken": "rt-token-1"}
+
+
+def test_mark_as_read_without_a_token_calls_nothing():
+    """聊天功能關著、或 LINE 沒附 token 時,webhook 事件裡就沒有這個欄位。
+    拿空字串去打只會換來一個 400 跟一行沒意義的 warning。"""
+    calls = []
+    c = _client(lambda req: calls.append(req) or httpx.Response(200, json={}))
+    assert c.mark_as_read("") is False
+    assert calls == []
+
+
+def test_mark_as_read_failure_is_not_fatal():
+    """已讀跟「正在輸入」一樣是錦上添花,失敗只回 False,不丟例外。"""
+    assert _client(lambda req: httpx.Response(400, json={})).mark_as_read("t") is False
