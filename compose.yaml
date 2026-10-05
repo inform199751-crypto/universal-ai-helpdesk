@@ -45,6 +45,9 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?請在 .env 設 OPENROUTER_API_KEY}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
       OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      # 選填。沒設時傳進去的是空字串,app 當成「沒有 NVIDIA」只走 OpenRouter
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
     ports:
       # 只綁 127.0.0.1。綁 0.0.0.0 的話,同網段的人(會議室 Wi-Fi)
       # 直接打得到 webhook 端點。容器內部仍然聽 0.0.0.0 —— 那是必要的,

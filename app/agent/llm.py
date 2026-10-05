@@ -1,6 +1,9 @@
-"""呼叫 OpenRouter。
+"""呼叫 LLM。設了 NVIDIA key 時 NVIDIA 是主要、OpenRouter 是備援;沒設就只走 OpenRouter。
 
-四個踩過的坑都在這裡處理:
+兩家都是 OpenAI 相容格式,差別只在網址、key 與模型名 —— 所以每個上游是一個
+_Endpoint,三樣東西綁在一起走,key 不會被送到另一家。
+
+四個踩過的坑都在這裡處理(都是在 OpenRouter 上踩到的):
   1. OpenRouter 會用 HTTP 200 包著 error 物件回來(provider 暫時滿載)。
      只看 status_code 會誤判成功,拿空字串當答案送給客人。
   2. 推理模型會把英文內部思考當答案唸出來 —— 要 reasoning.exclude。
@@ -52,6 +55,37 @@ class LLMResult:
     tool_call: ToolCall | None = None
 
 
+@dataclass(frozen=True)
+class _Endpoint:
+    """一個上游。網址、key、模型名永遠一起走 —— 分開傳的話,哪天參數順序
+    寫錯,NVIDIA 的 key 就被送去 OpenRouter 了,而且不會有任何錯誤訊息。"""
+    provider: str  # 給 log 看:demo 現場一眼就知道是誰在答
+    base_url: str
+    api_key: str
+    model: str
+
+
+def _endpoints(s) -> list[_Endpoint]:
+    """依序要試的上游。
+
+    有 NVIDIA key:NVIDIA → OpenRouter 主要模型。OpenRouter 的退回模型不接 ——
+    它預設就是 NVIDIA 主要模型的 :free 版,NVIDIA 塞車時它多半也塞車,而
+    OpenRouter 失敗的請求照樣扣每日額度。
+    沒有 key(含空字串):跟以前一樣,OpenRouter 主要 → OpenRouter 退回。
+    """
+    def openrouter(model: str) -> _Endpoint:
+        return _Endpoint("OpenRouter", s.openrouter_base_url, s.openrouter_api_key, model)
+
+    if getattr(s, "nvidia_api_key", ""):
+        return [_Endpoint("NVIDIA", s.nvidia_base_url, s.nvidia_api_key, s.nvidia_model),
+                openrouter(s.openrouter_model)]
+    endpoints = [openrouter(s.openrouter_model)]
+    fallback = getattr(s, "openrouter_fallback_model", None)
+    if fallback and fallback != s.openrouter_model:
+        endpoints.append(openrouter(fallback))
+    return endpoints
+
+
 def _parse_tool_call(message: dict) -> ToolCall | None:
     """只取第一個工具呼叫。目前只提供一個工具,多的沒有意義。"""
     calls = message.get("tool_calls") or []
@@ -75,8 +109,9 @@ def _parse_tool_call(message: dict) -> ToolCall | None:
     return ToolCall(name=fn.get("name") or "", arguments=arguments)
 
 
-def _complete_once(http: httpx.Client, messages: list[dict], model: str,
+def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint,
                    s, deadline: float, tools: list[dict] | None = None) -> LLMResult:
+    model = endpoint.model
     payload = {
         "model": model,
         "messages": messages,
@@ -91,9 +126,9 @@ def _complete_once(http: httpx.Client, messages: list[dict], model: str,
         # 會持續送空白維持連線,http.post 會一直等下去,timeout 也不會觸發。
         with http.stream(
             "POST",
-            f"{s.openrouter_base_url}/chat/completions",
+            f"{endpoint.base_url}/chat/completions",
             json=payload,
-            headers={"Authorization": f"Bearer {s.openrouter_api_key}"},
+            headers={"Authorization": f"Bearer {endpoint.api_key}"},
         ) as r:
             chunks = []
             for chunk in r.iter_bytes():
@@ -132,27 +167,25 @@ def _complete_once(http: httpx.Client, messages: list[dict], model: str,
     # 路由,上游實際分派到的供應商(body["model"])常常跟我們請求的 slug
     # 不一樣。不動 LLMResult.model 的語意 —— 既有測試斷言那個欄位是請求的
     # slug,退回機制才看得出「今天是備援模型在答」。
-    logger.info("模型 %s 回答完成(上游實際:%s,工具呼叫:%s)",
-               model, body.get("model"), tool_call.name if tool_call else "無")
+    logger.info("模型 %s(%s)回答完成(上游實際:%s,工具呼叫:%s)",
+               model, endpoint.provider, body.get("model"),
+               tool_call.name if tool_call else "無")
     return LLMResult(text=text, token_count=usage.get("total_tokens"),
                      latency_ms=elapsed, model=model, tool_call=tool_call)
 
 
 def complete(messages: list[dict], *, tools: list[dict] | None = None,
              client: httpx.Client | None = None) -> LLMResult:
-    """依序試偏好模型、退回模型,第一個答得出來的就用。
+    """依序試每個上游(見 _endpoints),第一個答得出來的就用。
 
     這不是「延後重送」—— 那會讓客人收到延遲很久的孤立訊息。這裡是在
     同一次請求裡換一個上游,客人只會看到一次回覆,只是慢了幾秒。
 
-    兩個模型合計受 llm_total_budget_seconds 限制,不會越過 LINE reply token
+    所有上游合計受 llm_total_budget_seconds 限制,不會越過 LINE reply token
     的一分鐘效期。回傳的 latency_ms 也是合計的 —— 客人實際等了多久。
     """
     s = get_settings()
-    models = [s.openrouter_model]
-    fallback = getattr(s, "openrouter_fallback_model", None)
-    if fallback and fallback != s.openrouter_model:
-        models.append(fallback)
+    endpoints = _endpoints(s)
 
     own = client is None
     http = client or httpx.Client(timeout=s.llm_timeout_seconds)
@@ -162,20 +195,22 @@ def complete(messages: list[dict], *, tools: list[dict] | None = None,
     deadline = started + s.llm_total_budget_seconds
     failures: list[str] = []
     try:
-        for i, model in enumerate(models):
+        for i, endpoint in enumerate(endpoints):
             if time.monotonic() > deadline:
-                failures.append(f"{model} → 沒時間試了")
+                failures.append(f"{endpoint.model} → 沒時間試了")
                 break
             try:
-                result = _complete_once(http, messages, model, s, deadline, tools)
+                result = _complete_once(http, messages, endpoint, s, deadline, tools)
                 # 記客人實際等了多久,不是最後那個模型花了多久 —— 只記最後
                 # 一個的話,退回越常發生紀錄越偏低。
                 return replace(result, latency_ms=int((time.monotonic() - started) * 1000))
             except LLMError as exc:
-                failures.append(f"{model} → {exc}")
-                if i + 1 < len(models):
-                    logger.warning("模型 %s 失敗,改用 %s 再試一次:%s",
-                                   model, models[i + 1], exc)
+                failures.append(f"{endpoint.model} → {exc}")
+                if i + 1 < len(endpoints):
+                    nxt = endpoints[i + 1]
+                    logger.warning("模型 %s(%s)失敗,改用 %s(%s)再試一次:%s",
+                                   endpoint.model, endpoint.provider,
+                                   nxt.model, nxt.provider, exc)
         raise LLMError("所有模型都失敗:" + " ; ".join(failures))
     finally:
         if own:
