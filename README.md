@@ -44,6 +44,7 @@ sequenceDiagram
     participant L as LINE 平台
     participant W as FastAPI webhook
     participant B as 背景任務
+    participant N as NVIDIA API
     participant O as OpenRouter
 
     C->>L: 傳一則訊息
@@ -53,12 +54,13 @@ sequenceDiagram
     W->>B: 排程背景工作
     Note over B: 去重靠 line_message_id 的 unique 索引<br/>LINE 重送也只會回答一次
     B->>L: 叫出「正在輸入」動畫
-    B->>O: 人設 + 最近十則對話 + 這一句
-    alt 主要模型(openrouter/free)滿載
-        O-->>B: HTTP 200,但 body 包著 error
-        B->>O: 改用備用模型 nemotron-3-super 重試
+    B->>N: 人設 + 最近十則對話 + 這一句(主要:nemotron-3-super)
+    alt NVIDIA 正常
+        N-->>B: 答案
+    else NVIDIA 失敗、逾時或 body 包著 error
+        B->>O: 同一份請求改打備援(openrouter/free),兩家合計 25 秒
+        O-->>B: 答案
     end
-    O-->>B: 答案
     B->>L: reply 優先,失敗改 push
     L->>C: 收到回覆
 ```
@@ -95,7 +97,7 @@ sequenceDiagram
 
 ## 技術棧
 
-FastAPI · SQLAlchemy · PostgreSQL / SQLite · Alembic · LINE Messaging API · OpenRouter
+FastAPI · SQLAlchemy · PostgreSQL / SQLite · Alembic · LINE Messaging API · NVIDIA API · OpenRouter
 
 ## 怎麼跑起來
 
@@ -157,7 +159,11 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 再加兩道安全網:照念轉接話術、或口頭說「我將為您轉接」卻沒呼叫工具,一律當成
 轉真人。AI 自己回完才標「已讀」;轉真人的訊息留給真人在後台點開。
 
-277 個自動測試全過、1 個跳過,SQLite 與
+主要模型可以改用 NVIDIA 自家 API 的 `nemotron-3-super`(設了 `NVIDIA_API_KEY` 就生效,
+OpenRouter 退成備援)。同一組 10 題(5 題該轉、5 題一般詢問,刻意避開關鍵字)實測:
+工具呼叫 5/5、誤轉 0、中位數 1.5 秒。樣本還小,所以關鍵字層與兩道安全網都保留。
+
+283 個自動測試全過、1 個跳過,SQLite 與
 PostgreSQL 各跑一輪(CI 兩個 job 都會跑;跳過的兩邊剛好相反:一邊是對方資料庫
 專屬的行為,證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
 
