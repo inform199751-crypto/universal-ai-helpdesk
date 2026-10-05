@@ -367,3 +367,116 @@ def test_tool_arguments_of_the_wrong_type_become_empty():
     r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
                  client=_http(lambda req: _tool_response(arguments=[1, 2])))
     assert r.tool_call == ToolCall("transfer_to_human", {})
+
+
+# --- 多供應商:NVIDIA 主、OpenRouter 備援 -------------------------------------
+
+NV_URL = "https://nvidia.example/v1"
+OR_URL = "https://openrouter.example/v1"
+
+
+@pytest.fixture
+def two_providers(monkeypatch):
+    """設了 NVIDIA key 的設定。網址、key、模型名兩邊各自一份 ——
+    這樣才看得出每個請求是照哪一份送的。"""
+    class FakeSettings:
+        nvidia_api_key = "nvapi-test"
+        nvidia_base_url = NV_URL
+        nvidia_model = "nv/super"
+        openrouter_api_key = "sk-or-test"
+        openrouter_base_url = OR_URL
+        openrouter_model = "or/free"
+        openrouter_fallback_model = "or/super-free"
+        llm_max_tokens = _S.llm_max_tokens
+        llm_timeout_seconds = _S.llm_timeout_seconds
+        llm_total_budget_seconds = _S.llm_total_budget_seconds
+
+    monkeypatch.setattr("app.agent.llm.get_settings", lambda: FakeSettings())
+    return FakeSettings
+
+
+def _recording(calls, responses):
+    """記下每個請求的 (網址, Authorization, model),回應依 model 分派。"""
+    def handler(request):
+        model = _json.loads(request.content)["model"]
+        calls.append((str(request.url), request.headers.get("Authorization"), model))
+        return responses.get(model, lambda: httpx.Response(404, text="unknown model"))()
+    return handler
+
+
+def test_with_an_nvidia_key_the_first_request_goes_to_nvidia(two_providers):
+    calls = []
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_recording(calls, {"nv/super": _ok, "or/free": _ok})))
+    assert calls == [(f"{NV_URL}/chat/completions", "Bearer nvapi-test", "nv/super")]
+
+
+def test_when_nvidia_fails_openrouter_answers_with_its_own_key(two_providers):
+    """key 送錯供應商等於把 key 交給第三方 —— 每個請求的網址與 key
+    必須是同一家的。"""
+    calls = []
+    r = complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_recording(calls, {
+                     "nv/super": lambda: httpx.Response(503, text="overloaded"),
+                     "or/free": lambda: _ok("備援答的")})))
+    assert r.text == "備援答的"
+    assert r.model == "or/free"
+    assert calls == [
+        (f"{NV_URL}/chat/completions", "Bearer nvapi-test", "nv/super"),
+        (f"{OR_URL}/chat/completions", "Bearer sk-or-test", "or/free"),
+    ]
+
+
+def test_with_an_nvidia_key_the_openrouter_copy_of_the_model_is_not_tried(two_providers):
+    """OpenRouter 上的 :free 版跟 NVIDIA 主要模型是同一顆 —— NVIDIA 塞車時
+    它多半也塞車(9/24 四次全限流),而 OpenRouter 失敗的請求也扣每日額度。"""
+    calls = []
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_recording(calls, {
+                     "nv/super": _overloaded, "or/free": _overloaded,
+                     "or/super-free": _ok})))
+    assert [model for _, _, model in calls] == ["nv/super", "or/free"]
+
+
+def test_an_empty_nvidia_key_means_openrouter_only(two_providers):
+    """compose 沒給值時傳進來的是空字串,不是沒有這個變數。把空字串當成
+    「有設定」的話,每則訊息都先拿空的 key 去打 NVIDIA、必定 401 再退回。"""
+    two_providers.nvidia_api_key = ""
+    calls = []
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_recording(calls, {"or/free": _ok})))
+    assert calls == [(f"{OR_URL}/chat/completions", "Bearer sk-or-test", "or/free")]
+
+
+def test_the_default_nvidia_endpoint_and_model_are_the_ones_nvidia_serves(monkeypatch):
+    """模型名不能帶 OpenRouter 的 :free 後綴 —— NVIDIA 不認得那個名字,
+    每則訊息都會失敗再退回,看起來「有在動」其實主要模型從沒答過。"""
+    from app.config import Settings
+    for var in ("NVIDIA_BASE_URL", "NVIDIA_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k",
+                 nvidia_api_key="nvapi-x")
+    monkeypatch.setattr("app.agent.llm.get_settings", lambda: s)
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url), _json.loads(request.content)["model"]))
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    assert seen == [("https://integrate.api.nvidia.com/v1/chat/completions",
+                     "nvidia/nemotron-3-super-120b-a12b")]
+
+
+def test_the_log_says_which_provider_answered(two_providers, caplog):
+    """demo 現場看 log 就要知道是 NVIDIA 還是備援在答,不必去查設定。"""
+    import logging
+    caplog.set_level(logging.INFO, logger="app.agent.llm")
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_recording([], {"nv/super": _ok})))
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_recording([], {"nv/super": _overloaded, "or/free": _ok})))
+    done = [rec.message for rec in caplog.records if "回答完成" in rec.message]
+    assert len(done) == 2
+    assert "NVIDIA" in done[0] and "OpenRouter" in done[1]
