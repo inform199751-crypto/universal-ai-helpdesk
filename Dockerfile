@@ -18,9 +18,12 @@ WORKDIR /app
 # 下載過的 wheel,不必再連網抓 fastapi / sqlalchemy / cryptography 那一整串。
 # (原本寫 --no-cache-dir 是反效果 —— 它關掉的正是這裡唯一能省時間的東西。
 #  cache mount 不會留在映像層裡,所以映像不會因此變大。)
-COPY pyproject.toml ./
+#
+# -c constraints.txt:鎖成本機與 CI 測過的同一組版本。沒鎖的話每次 build 都抓
+# 當下最新版(2026-10-05 就抓到 SQLAlchemy 2.1,本機測的是 2.0)。
+COPY pyproject.toml constraints.txt ./
 COPY app ./app
-RUN --mount=type=cache,target=/root/.cache/pip pip install .
+RUN --mount=type=cache,target=/root/.cache/pip pip install -c constraints.txt .
 
 # 執行期才需要、但不是 Python 套件的一部分
 # (pyproject 的 include 只有 app*,理由見那個檔案的註解)
