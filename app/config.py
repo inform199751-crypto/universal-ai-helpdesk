@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # 對話
     history_limit: int = 10
     line_max_text_length: int = 5000
+
+    # 速率限制(設計見 docs/superpowers/specs/2026-10-05-rate-limit-design.md)。
+    # 0 = 關閉那一條。全站每分鐘 30 留 10 的餘裕在 NVIDIA 免費層的每分鐘約 40 次以下 ——
+    # 超過的話 NVIDIA 回 429,全部退到 OpenRouter,一天 50 次幾分鐘就燒光。
+    rate_limit_user_per_minute: int = Field(5, ge=0)
+    rate_limit_user_per_day: int = Field(20, ge=0)
+    rate_limit_global_per_minute: int = Field(30, ge=0)
 
     @field_validator("*", mode="before")
     @classmethod
