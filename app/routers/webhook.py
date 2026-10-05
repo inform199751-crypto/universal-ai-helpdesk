@@ -17,7 +17,8 @@ from sqlalchemy.exc import IntegrityError
 
 from app.agent.handoff import (
     EXPIRED_PREFIX, RECITED_HISTORY_MARKER, Decision, build_tool, customer_label,
-    decision_from_recited_script, decision_from_tool, enter_human_mode,
+    decision_from_promised_transfer, decision_from_recited_script, decision_from_tool,
+    enter_human_mode,
     is_handoff_script, is_still_human, match_keyword, return_to_ai, staff_message,
 )
 from app.agent.llm import LLMError, complete
@@ -258,6 +259,13 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             recited = decision_from_recited_script(rules, result.text)
             if recited is not None:
                 _handoff(decision=recited, **handoff_args)
+                return
+            # 第二道:沒照念 script,而是自己改寫成「我將為您轉接」(2026-09-29
+            # 真機,2.6B 的小模型)。排在念 script 那道之後 —— 店家的 script
+            # 本身也含「請店長」這類字,照念時要保留它自己的類別與原句。
+            promised = decision_from_promised_transfer(result.text)
+            if promised is not None:
+                _handoff(decision=promised, **handoff_args)
                 return
 
         # 只有模型真的回了答案才加:fallback 前面接「專員不在線上」沒有意義

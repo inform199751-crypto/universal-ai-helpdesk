@@ -792,3 +792,38 @@ def test_a_mark_as_read_failure_does_not_touch_the_answer(monkeypatch):
     with TestClient(app) as client:
         assert _post(client, _body()).status_code == 200
     assert out == ["您好"]
+
+
+# --- 口頭說要轉接、卻沒呼叫工具 ---------------------------------------------
+
+PROMISED = ("我理解您的 daughter 正在遭受不適,請務必立即尋求專業醫療協助。"
+            "由於這涉及健康問題,我將為您轉接給專業人員協助。")
+
+
+def test_a_model_that_promises_a_transfer_without_the_tool_is_handed_off(
+        rules, line_out, monkeypatch, read_calls):
+    """2026-09-29 真機:模型說要轉接卻沒呼叫工具。客人要真的被轉,而且
+    收到的是店家審過的通用句,不是那段夾著醫療建議的話。"""
+    _llm(monkeypatch, LLMResult(PROMISED, token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒起疹子"))
+    assert _replies(line_out) == [GENERIC_SCRIPT]
+    (_, to, text), = _pushes(line_out)
+    assert to == "Ustaff"
+    assert "判斷依據:AI —— 口頭說要轉接但沒呼叫工具(「轉接」)" in text
+    assert _mode()[0] == ConversationMode.HUMAN
+    assert read_calls == []   # 轉真人一律留給真人點開
+    with session_scope() as db:
+        stored = [r.content for r in db.query(ChatHistory) if r.role.value == "assistant"]
+    assert stored == [GENERIC_SCRIPT]   # 模型那段話不能進紀錄,客人沒看到它
+
+
+def test_reciting_a_script_still_keeps_its_own_category(rules, line_out, monkeypatch):
+    """照念 safety script 時,script 本身也含「請店長」—— 要走念 script 那道
+    (保留 safety 類別與原句),不是被口頭承諾那道搶走變成通用句。"""
+    _llm(monkeypatch, LLMResult(SAFETY_SCRIPT, token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒起疹子"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    (_, _, text), = _pushes(line_out)
+    assert text.startswith("【安全】")

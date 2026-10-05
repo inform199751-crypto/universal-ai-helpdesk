@@ -205,3 +205,78 @@ def test_reason_with_newlines_and_over_60_chars_is_collapsed_and_capped():
 def test_the_expired_prefix_is_a_complete_sentence():
     """它會直接接在模型答案前面,少了句號兩句話會黏在一起。"""
     assert EXPIRED_PREFIX.endswith("。")
+
+
+# --- 口頭說要轉接、卻沒呼叫工具 ---------------------------------------------
+# 2026-09-29 真機:免費自動路由分到 2.6B 的小模型,回了「我將為您轉接給
+# 專業人員協助」卻沒呼叫工具 —— 客人以為被轉了,HUMAN 沒切、店員沒收到通知,
+# 而且那段話還順便給了醫療建議。照念 script 的安全網抓不到,因為它是改寫過的。
+
+import pytest  # noqa: E402
+
+from app.agent.handoff import (  # noqa: E402
+    RECITED_HISTORY_MARKER, decision_from_promised_transfer,
+)
+from app.knowledge.loader import load_industry  # noqa: E402
+
+INDUSTRY_DIR = __import__("pathlib").Path(__file__).resolve().parents[1] / "industries"
+
+
+def test_the_real_promise_from_the_2026_09_29_phone_test_is_a_handoff():
+    d = decision_from_promised_transfer(
+        "我理解您的 daughter 正在遭受不適,請務必立即尋求專業醫療協助。"
+        "由於這涉及健康問題,我將為您轉接給專業人員協助。")
+    assert d is not None
+    # 不沿用模型那段話:它可能夾著醫療建議。回店家審過的通用句。
+    assert d.category is None
+    assert d.script == GENERIC_SCRIPT
+    assert d.basis == "AI —— 口頭說要轉接但沒呼叫工具(「轉接」)"
+
+
+@pytest.mark.parametrize("text", [
+    "這個問題我幫您轉給專人處理。",
+    "我會請店長跟您聯繫。",
+    "這部分我請主管跟您說明。",
+    "稍後會有專人與您聯繫。",
+    "我幫您轉給真人客服。",
+])
+def test_paraphrased_promises_to_hand_over_are_a_handoff(text):
+    assert decision_from_promised_transfer(text) is not None
+
+
+def test_an_ordinary_answer_is_not_a_handoff():
+    assert decision_from_promised_transfer("門口兩格車位,滿了對面有收費停車場。") is None
+    assert decision_from_promised_transfer("") is None
+
+
+def test_an_echoed_history_marker_is_a_handoff():
+    """F1a 把歷史裡的 script 換成標記;弱模型偶爾會把標記原樣念回來。
+    那句話送到客人面前沒有意義,當成轉真人比較安全。"""
+    assert decision_from_promised_transfer(RECITED_HISTORY_MARKER) is not None
+
+
+@pytest.mark.parametrize("industry", ["restaurant", "clinic", "ecommerce"])
+def test_no_faq_answer_policy_or_apology_in_the_real_data_reads_as_a_promise(industry):
+    """模型常照 FAQ / 政策原文回答;道歉話(apologize)本來就該由模型說。
+    這些文字裡要是含有轉接字眼,每一次正常回答都會被誤轉真人。"""
+    data = load_industry(INDUSTRY_DIR / industry)
+    texts = ([f["a"] for f in data["faq"]]
+             + [p["content"] for p in data["policies"]]
+             + [e["script"] for e in data["escalation"] if e["action"] == "apologize"])
+    hits = [t for t in texts if decision_from_promised_transfer(t) is not None]
+    assert hits == []
+
+
+@pytest.mark.parametrize("industry", ["restaurant", "clinic", "ecommerce"])
+def test_every_real_transfer_script_that_promises_a_person_reads_as_a_promise(industry):
+    """模型改寫轉接話術時,用字多半跟店家的 script 相近。script 本身都抓不到
+    的話,改寫過的版本更抓不到 —— 新增行業或改 script 時,這條會先紅。
+
+    唯一例外是診所 safety:它請客人自己來電、就醫,不是承諾有人會聯繫,
+    照念的情況由 decision_from_recited_script 逐字接住。"""
+    data = load_industry(INDUSTRY_DIR / industry)
+    missed = [e["script"] for e in data["escalation"]
+              if e["action"] == "transfer"
+              and not (industry == "clinic" and e["category"] == "safety")
+              and decision_from_promised_transfer(e["script"]) is None]
+    assert missed == []

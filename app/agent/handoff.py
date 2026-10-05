@@ -120,6 +120,34 @@ def decision_from_recited_script(rules: list[dict], text: str) -> Decision | Non
     return None
 
 
+# 模型嘴上答應要轉人的字眼。從三個行業 transfer 規則的 script 歸納
+# (請店長、請主管、請專人、轉給值班主管、升級給負責同仁…),加上 2026-09-29
+# 真機看到的「我將為您轉接給專業人員協助」。寬一點是刻意的:誤轉的代價是
+# 一位客人等真人,漏轉的代價是客人以為有人會來、其實沒有。
+#
+# 不收單獨的「轉給」:電商的道歉話是「我會把您的意見轉給倉儲與客服同仁」——
+# 那是轉達意見,不是把客人交出去。收進來的話,模型每次照著道歉都會誤轉。
+PROMISE_PHRASES = ("轉接", "轉給專人", "轉給真人", "轉給專業", "轉給主管",
+                   "轉給值班", "轉給帳務", "轉給負責", "轉給櫃檯", "升級給", "請專人",
+                   "專人與您", "專人協助", "專人為您", "請店長", "請主管", "主管直接",
+                   "真人客服")
+
+
+def decision_from_promised_transfer(text: str) -> Decision | None:
+    """第二道安全網:模型沒呼叫工具、也不是照念 script,而是自己改寫成
+    「我將為您轉接」—— 照念 script 的安全網抓不到這種,客人卻一樣以為
+    被轉了。
+
+    不沿用模型那段話,改回店家審過的 GENERIC_SCRIPT:那段話是模型臨場
+    寫的,真機上就夾過醫療建議。類別不猜(None),店員看到的是「轉真人」。
+    """
+    for phrase in PROMISE_PHRASES:
+        if phrase in text:
+            return Decision(None, GENERIC_SCRIPT,
+                            f"AI —— 口頭說要轉接但沒呼叫工具(「{phrase}」)")
+    return None
+
+
 def as_utc(value: datetime | None) -> datetime | None:
     """SQLite 讀回來的 datetime 沒有時區(實測 tzinfo=None),直接跟
     datetime.now(timezone.utc) 比會 TypeError。PostgreSQL 讀回來有時區,
