@@ -48,6 +48,10 @@ services:
       # 選填。沒設時傳進去的是空字串,app 當成「沒有 NVIDIA」只走 OpenRouter
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      # 速率限制。0 = 關閉那一條(跑評測或 demo 前想暫時關掉時)
+      RATE_LIMIT_USER_PER_MINUTE: ${RATE_LIMIT_USER_PER_MINUTE:-5}
+      RATE_LIMIT_USER_PER_DAY: ${RATE_LIMIT_USER_PER_DAY:-20}
+      RATE_LIMIT_GLOBAL_PER_MINUTE: ${RATE_LIMIT_GLOBAL_PER_MINUTE:-30}
     ports:
       # 只綁 127.0.0.1。綁 0.0.0.0 的話,同網段的人(會議室 Wi-Fi)
       # 直接打得到 webhook 端點。容器內部仍然聽 0.0.0.0 —— 那是必要的,
