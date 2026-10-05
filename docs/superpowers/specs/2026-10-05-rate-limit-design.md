@@ -164,7 +164,7 @@ def check(db, *, user_pk: str, now: datetime, limits: Limits) -> Verdict
 ### 新增
 
 - `app/ratelimit.py` —— `Limits`、`Verdict`、`check()`、`reply_text()`
-- `alembic/versions/<rev>_contact_and_chat_created_index.py`
+- `alembic/versions/7b1e4c2a9d30_contact_and_chat_created_index.py`
 - `tests/test_ratelimit.py`
 
 ### 修改
