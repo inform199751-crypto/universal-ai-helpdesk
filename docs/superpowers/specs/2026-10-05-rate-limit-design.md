@@ -80,9 +80,10 @@
 模組 `app/ratelimit.py`,一個純粹的判定函式:
 
 ```python
-def check(db, *, company_id: str, user_pk: str, now: datetime,
-          limits: Limits) -> Verdict
+def check(db, *, user_pk: str, now: datetime, limits: Limits) -> Verdict
 ```
+
+不帶 `company_id`:`users.id` 本身就屬於某一家公司,每人的兩條用它就夠;全站那條本來就跨所有公司。
 
 `Verdict` 帶三個欄位:`action`(`ALLOW` / `NOTIFY` / `SILENT` / `BUSY`)、
 `rule`(`user_minute` / `user_day` / `global_minute`,放行時為 `None`)、`count`(觸發時的計數)。
