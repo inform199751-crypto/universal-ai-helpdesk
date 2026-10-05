@@ -31,9 +31,11 @@ A:{{ item.a }}
 {% endfor %}
 
 ## 什麼時候要轉給真人
-{% for item in escalation %}- 遇到「{{ item.trigger }}」這類情況({{ item.level }}):
-  不要自己判斷、不要給建議,直接回覆「{{ item.script }}」
-{% endfor %}
+{% for item in escalation %}{% if item.action == "transfer" %}- 遇到「{{ item.trigger }}」這類情況({{ item.level }}),或意思相近的說法:
+  不要自己回答、不要給建議,呼叫 transfer_to_human 工具,category 填 {{ item.category }}。
+{% else %}- 遇到「{{ item.trigger }}」這類情況({{ item.level }}):
+  直接回覆「{{ item.script }}」
+{% endif %}{% endfor %}
 
 ## 底線
 資料裡沒有的事情就說不知道,並請客人聯繫 {{ company.contact }}。

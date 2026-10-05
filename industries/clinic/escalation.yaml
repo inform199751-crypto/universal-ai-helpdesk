@@ -1,6 +1,6 @@
 - level: L3
   category: safety
-  trigger: 我這個症狀是不是、會不會是癌症、要不要吃藥、嚴不嚴重
+  trigger: 我這個症狀是不是、會不會是癌症、要不要吃藥、嚴不嚴重、癌症、腫瘤
   action: transfer
   script: 這需要醫師當面評估才能回答,我無法在線上判斷。請您來電 02-8765-4321 安排看診;若情況緊急請直接就醫。
 - level: L3

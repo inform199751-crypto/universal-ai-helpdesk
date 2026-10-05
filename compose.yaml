@@ -43,8 +43,8 @@ services:
       DATABASE_URL: postgresql+psycopg://helpdesk:${POSTGRES_PASSWORD:?}@db:5432/helpdesk
       FERNET_KEY: ${FERNET_KEY:?請在 .env 設 FERNET_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?請在 .env 設 OPENROUTER_API_KEY}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
-      OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL:-openrouter/free}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
+      OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
     ports:
       # 只綁 127.0.0.1。綁 0.0.0.0 的話,同網段的人(會議室 Wi-Fi)
       # 直接打得到 webhook 端點。容器內部仍然聽 0.0.0.0 —— 那是必要的,

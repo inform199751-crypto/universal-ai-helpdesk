@@ -61,6 +61,15 @@ class Company(Base, TimestampMixin):
     # 自動回到 AI。
     human_mode_timeout_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
 
+    # 升級規則(escalation.yaml 整份)。seed 時寫入,執行時規則層與工具定義
+    # 都從這裡讀,不讀 yaml 檔 —— system_prompt 也是 seed 時組好的,兩者要
+    # 來自同一次 seed。改了 yaml 卻沒重跑 seed 時,若規則在執行時讀檔,
+    # prompt 與規則就會講不同的話,而且不會有任何錯誤訊息。
+    escalation_rules: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # 轉真人時推播通知的對象(店員的 userId 或群組 ID)。NULL = 不推播,
+    # 只寫 warning log —— 沒設定的店家也要能正常運作。
+    staff_notify_to: Mapped[str | None] = mapped_column(String(64))
+
     # 決策 7:向量庫「一家一個 collection」,不是同一個 collection 用
     # company_id 過濾 —— 過濾法只要有一次查詢忘記加 filter,就會把別家
     # 公司的文件內容回給客人,而且這種 bug 不會報錯,只會安靜地外洩。

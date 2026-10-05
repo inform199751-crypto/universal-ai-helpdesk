@@ -54,9 +54,9 @@ sequenceDiagram
     Note over B: 去重靠 line_message_id 的 unique 索引<br/>LINE 重送也只會回答一次
     B->>L: 叫出「正在輸入」動畫
     B->>O: 人設 + 最近十則對話 + 這一句
-    alt 偏好模型滿載
+    alt 主要模型(openrouter/free)滿載
         O-->>B: HTTP 200,但 body 包著 error
-        B->>O: 改用 openrouter/free 重試
+        B->>O: 改用備用模型 nemotron-3-super 重試
     end
     O-->>B: 答案
     B->>L: reply 優先,失敗改 push
@@ -149,9 +149,17 @@ Demo 前請照 [docs/demo-checklist.md](docs/demo-checklist.md) 跑一遍。
 
 **v1 完成,已經接在真的 LINE 官方帳號上跑過;B 階段部署完成 —— 服務跑在
 容器裡、資料在 PostgreSQL、對外是固定網址,設計上容器退出會自動重啟
-(`restart: unless-stopped`)。** 163 個自動測試全過、1 個跳過,SQLite 與
-PostgreSQL 各跑一輪(跳過的兩邊剛好相反:一邊是對方資料庫專屬的行為,
-證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
+(`restart: unless-stopped`)。**
+
+轉真人已 agent 化:關鍵字規則保底,模型透過 `transfer_to_human` 工具判斷換句話說的情況;
+轉了之後 AI 停止回答、推播通知店員、30 分鐘後自動交還。
+免費模型的自動路由判斷不穩(真機 5 次只有 3 次真的呼叫工具),所以模型那層
+再加兩道安全網:照念轉接話術、或口頭說「我將為您轉接」卻沒呼叫工具,一律當成
+轉真人。AI 自己回完才標「已讀」;轉真人的訊息留給真人在後台點開。
+
+277 個自動測試全過、1 個跳過,SQLite 與
+PostgreSQL 各跑一輪(CI 兩個 job 都會跑;跳過的兩邊剛好相反:一邊是對方資料庫
+專屬的行為,證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
 
 真機驗證過的行為:
 

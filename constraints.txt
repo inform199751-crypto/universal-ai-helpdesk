@@ -1,0 +1,59 @@
+# 鎖定版本:docker build 與 CI 都用 `pip install -c constraints.txt ...` 安裝。
+#
+# 為什麼要鎖:pyproject 只寫最低版本(>=),沒有這個檔的話每次 build 都抓
+# 「當下最新版」—— 2026-10-05 就抓到 SQLAlchemy 2.1、Starlette 1.7,跟本機測過的
+# 2.0、1.6 不一樣。鎖了之後,本機 venv、CI、正式映像是同一組版本。
+#
+# 這是 constraints 不是 requirements:只限制「要裝的話裝哪一版」,不會多裝東西。
+# 所以 Windows 才有的 colorama、tzdata 留在這裡也不會被裝進 Linux 映像。
+#
+# 要升級時:在 venv 裡升級、跑完整套測試(SQLite + PostgreSQL)後重新產生:
+#   .venv\Scripts\python.exe -m pip freeze --exclude-editable
+# 再把下面「Linux 才有」那一段補回去 —— Windows 的 venv freeze 不會列出它。
+
+alembic==1.20.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.1
+fastapi==0.141.1
+greenlet==3.5.6
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.20
+iniconfig==2.3.0
+Jinja2==3.1.6
+Mako==1.4.1
+MarkupSafe==3.0.3
+opencc-python-reimplemented==0.1.7
+packaging==26.3
+pluggy==1.6.0
+psycopg==3.3.6
+psycopg-binary==3.3.6
+pycparser==3.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+pydantic_core==2.46.5
+Pygments==2.21.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+SQLAlchemy==2.0.54
+starlette==1.6.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.4
+uvicorn==0.53.0
+watchfiles==1.2.0
+websockets==17.1
+
+# --- Linux 才有(uvicorn[standard] 只在非 Windows 裝)---
+# 版本取自 2026-10-05 的正式映像。
+uvloop==0.23.0

@@ -24,3 +24,14 @@ def test_settings_have_defaults(monkeypatch):
     assert s.database_url.startswith("sqlite")
     assert s.history_limit == 10
     assert s.line_max_text_length == 5000
+
+
+def test_default_models_both_support_tool_calling(monkeypatch):
+    """z-ai/glm-5.2:free 不支援 tools(OpenRouter 的 supported_parameters 沒有
+    tools)。把它設成主要模型的話,每一次請求都會失敗再退回,轉真人的
+    agent 層等於只剩一半在工作,而且 log 只看得到「模型失敗」。"""
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("OPENROUTER_FALLBACK_MODEL", raising=False)
+    s = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k")
+    assert s.openrouter_model == "openrouter/free"
+    assert s.openrouter_fallback_model == "nvidia/nemotron-3-super-120b-a12b:free"

@@ -257,3 +257,113 @@ def test_the_fallback_model_does_not_get_a_fresh_budget(small_budget):
     with pytest.raises(LLMError):
         complete([{"role": "user", "content": "嗨"}], client=_http(handler))
     assert calls == [PREFERRED]
+
+
+# --- 工具呼叫 ----------------------------------------------------------------
+
+from app.agent.llm import ToolCall  # noqa: E402
+
+TOOL = {"type": "function", "function": {
+    "name": "transfer_to_human", "description": "轉給真人",
+    "parameters": {"type": "object",
+                   "properties": {"category": {"type": "string", "enum": ["safety"]}},
+                   "required": ["category"]}}}
+
+
+def _tool_response(arguments='{"category": "safety", "reason": "起紅疹"}', content=None):
+    """OpenAI 相容格式的工具呼叫。arguments 是「JSON 字串」不是物件 ——
+    這是規格,也是模型最常寫壞的地方。"""
+    return httpx.Response(200, json={
+        "choices": [{"message": {
+            "content": content,
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "transfer_to_human",
+                                         "arguments": arguments}}]}}],
+        "usage": {"total_tokens": 30}})
+
+
+def test_a_tool_call_with_empty_content_is_a_success():
+    """呼叫工具時 content 本來就常常是 null。沿用「沒有文字就是失敗」的判斷,
+    每一次轉真人都會被當成模型壞掉、改送 fallback。"""
+    r = complete([{"role": "user", "content": "我女兒吃完全身起紅疹"}],
+                 tools=[TOOL], client=_http(lambda req: _tool_response()))
+    assert r.tool_call == ToolCall("transfer_to_human",
+                                   {"category": "safety", "reason": "起紅疹"})
+    assert r.text == ""
+
+
+def test_tools_are_sent_upstream_only_when_given():
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content))
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(handler))
+    assert "tools" not in seen[0]
+    assert seen[1]["tools"] == [TOOL]
+
+
+def test_text_and_a_tool_call_are_both_returned():
+    """同時回了文字與工具呼叫時兩個都要交出去,由呼叫端決定 ——
+    在這裡丟掉任何一個,webhook 就沒辦法實作「以工具為準」。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(content="我幫您轉給專人")))
+    assert r.text == "我幫您轉給專人"
+    assert r.tool_call is not None
+
+
+def test_broken_tool_arguments_still_produce_a_tool_call():
+    """模型已經表達「要轉」了。參數 JSON 寫壞不該讓整次呼叫失敗 ——
+    那會讓客人的緊急狀況掉進 fallback。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(arguments="{category: safety")))
+    assert r.tool_call == ToolCall("transfer_to_human", {})
+
+
+def test_no_text_and_no_tool_call_is_still_a_failure():
+    empty = lambda req: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(empty))
+
+
+def test_tool_arguments_already_an_object_are_used_as_is():
+    """arguments 已經是字典時,就直接用——模型的意圖很清楚,不該丟掉。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(arguments={"category": "safety"})))
+    assert r.tool_call == ToolCall("transfer_to_human", {"category": "safety"})
+
+
+def test_a_successful_answer_logs_which_model_actually_answered(caplog):
+    """F3d:退回機制生效時,回應裡的 model 欄位(上游實際回答的模型)
+    可能跟我們請求的 slug 不一樣(例如 openrouter/free 自動路由分派到
+    的實際供應商)。品質忽好忽壞時,這是第一個要查的線索。"""
+    import logging
+    caplog.set_level(logging.INFO, logger="app.agent.llm")
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "model": "some-actual-upstream/model-x",
+            "choices": [{"message": {"content": "您好"}}],
+            "usage": {"total_tokens": 5}})
+
+    r = complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    assert r.model == PREFERRED  # 既有語意不變:model 欄位仍是請求的 slug
+    assert any("some-actual-upstream/model-x" in rec.message and "工具呼叫:無" in rec.message
+               for rec in caplog.records)
+
+
+def test_a_tool_call_answer_logs_the_tool_name(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="app.agent.llm")
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+            client=_http(lambda req: _tool_response()))
+    assert any("工具呼叫:transfer_to_human" in rec.message for rec in caplog.records)
+
+
+def test_tool_arguments_of_the_wrong_type_become_empty():
+    """arguments 是其他型別(陣列、數字等)時就當成失敗解析,回 {}。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _tool_response(arguments=[1, 2])))
+    assert r.tool_call == ToolCall("transfer_to_human", {})

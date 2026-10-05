@@ -332,3 +332,90 @@ def test_validate_and_list_run_without_any_credentials(tmp_path):
                            cwd=tmp_path, env=env, capture_output=True,
                            text=True, encoding="utf-8", errors="replace")
         assert r.returncode == 0, f"{args} 失敗:\n{r.stderr[-800:]}"
+
+
+# --- 轉真人:規則、通知對象、交還 --------------------------------------------
+
+from app.cli import run_release  # noqa: E402
+from app.models import ConversationMode  # noqa: E402
+
+
+def _human_user(company_id: str, line_user_id: str) -> None:
+    from datetime import datetime, timedelta, timezone
+    with session_scope() as db:
+        db.add(User(company_id=company_id, line_user_id=line_user_id,
+                    mode=ConversationMode.HUMAN,
+                    mode_expires_at=datetime.now(timezone.utc) + timedelta(minutes=30)))
+
+
+def _modes(company_id: str) -> list[str]:
+    with session_scope() as db:
+        return [u.mode.value for u in db.query(User).filter(User.company_id == company_id)]
+
+
+def test_seed_stores_the_escalation_rules():
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    with session_scope() as db:
+        rules = db.get(Company, cid).escalation_rules
+    assert {"safety", "legal", "money", "privacy"} <= {r["category"] for r in rules}
+    assert all(r["trigger"] and r["script"] and r["action"] for r in rules)
+
+
+def test_switching_industry_rewrites_the_escalation_rules():
+    """規則沒跟著換的話,診所的客人說「過敏」會被回餐廳的「請店長聯繫」。"""
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    run_seed("clinic", slug="bistro")
+    with session_scope() as db:
+        safety = next(r for r in db.get(Company, cid).escalation_rules
+                      if r["category"] == "safety")
+    assert "醫師" in safety["script"]
+
+
+def test_seed_stores_and_strips_staff_notify_to():
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET,
+                   channel_token=TOKEN, staff_notify_to="  Ustaff0001\n")
+    with session_scope() as db:
+        assert db.get(Company, cid).staff_notify_to == "Ustaff0001"
+
+
+def test_seed_without_staff_notify_to_keeps_the_existing_value():
+    """沒給是「不動」,不是「清空」—— 換行業時不該逼人再找一次店員 userId。"""
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET,
+                   channel_token=TOKEN, staff_notify_to="Ustaff0001")
+    run_seed("clinic", slug="bistro")
+    with session_scope() as db:
+        assert db.get(Company, cid).staff_notify_to == "Ustaff0001"
+
+
+def test_reset_history_returns_only_that_companys_customers_to_ai():
+    """舊對話都清了,還卡在 HUMAN 沒有意義;但別家公司的客人不能被動到。"""
+    a = run_seed("restaurant", slug="aa", channel_secret=SECRET, channel_token=TOKEN)
+    b = run_seed("restaurant", slug="bb", channel_secret=SECRET, channel_token=TOKEN)
+    _human_user(a, "Ua")
+    _human_user(b, "Ub")
+    run_seed("clinic", slug="aa", reset_history=True)
+    assert _modes(a) == ["AI"]
+    assert _modes(b) == ["HUMAN"]
+
+
+def test_release_returns_every_human_customer_to_ai():
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    _human_user(cid, "U1")
+    _human_user(cid, "U2")
+    assert run_release("bistro") == 2
+    assert _modes(cid) == ["AI", "AI"]
+    with session_scope() as db:
+        assert all(u.mode_expires_at is None for u in db.query(User))
+
+
+def test_release_unknown_slug_is_an_error():
+    with pytest.raises(SystemExit) as exc:
+        run_release("nope")
+    assert "nope" in str(exc.value)
+
+
+def test_main_release_prints_the_count(capsys):
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    _human_user(cid, "U1")
+    assert main(["release", "--slug", "bistro"]) == 0
+    assert "1 位" in capsys.readouterr().out

@@ -20,6 +20,7 @@ API_BASE = "https://api.line.me"
 REPLY_PATH = "/v2/bot/message/reply"
 PUSH_PATH = "/v2/bot/message/push"
 LOADING_PATH = "/v2/bot/chat/loading/start"
+MARK_AS_READ_PATH = "/v2/bot/chat/markAsRead"
 SUFFIX = "(訊息過長已截斷)"
 
 WEBHOOK_ENDPOINT_PATH = "/v2/bot/channel/webhook/endpoint"
@@ -103,6 +104,19 @@ class LineClient:
         return self._post(LOADING_PATH,
                           {"chatId": user_id.strip(), "loadingSeconds": seconds},
                           ok=(200, 202))
+
+    def mark_as_read(self, mark_as_read_token: str) -> bool:
+        """把客人的訊息標成已讀(連同它之前的所有訊息)。
+
+        只有官方帳號開了「聊天」才需要:沒開時 LINE 一收到就自動已讀;
+        開了之後要真人在後台點開才會已讀,AI 回了客人那邊也還是「未讀」。
+
+        token 來自 webhook message 事件的 markAsReadToken,沒有期限。
+        沒有 token 就不打 —— 打了只會換來 400 和一行沒意義的 warning。
+        """
+        if not mark_as_read_token:
+            return False
+        return self._post(MARK_AS_READ_PATH, {"markAsReadToken": mark_as_read_token})
 
     def send(self, reply_token: str, user_id: str, text: str) -> bool:
         """先 reply,失敗改 push。兩個都失敗就放棄 ——

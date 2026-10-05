@@ -47,3 +47,21 @@ def test_three_industries_are_actually_different():
     """避免複製貼上沒改內容。"""
     names = {load_industry(INDUSTRIES / i)["company"]["name"] for i in ALL}
     assert len(names) == 3
+
+
+# --- 診所:病情判斷的說法要抓得到 --------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "我這個是癌症嗎",          # 2026-10-01 真機原句:舊的 trigger 全是長句,一個都沒命中
+    "這顆會不會是腫瘤",
+    "我這個症狀是不是癌症",    # 原本就抓得到的,不能因為改 trigger 而掉
+])
+def test_clinic_catches_diagnosis_questions_with_the_keyword_layer(text):
+    """關鍵字層是安全路徑的保底 —— 免費模型判斷不穩(真機 5 次只轉 3 次),
+    「是不是癌症」這種問題不能只靠模型。trigger 寫成整句的話,客人少一個字
+    就對不到。"""
+    from app.agent.handoff import match_keyword
+
+    rules = load_industry(INDUSTRIES / "clinic")["escalation"]
+    decision = match_keyword(rules, text)
+    assert decision is not None and decision.category == "safety"
