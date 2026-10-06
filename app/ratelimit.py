@@ -2,10 +2,13 @@
 
 計數直接從 chat_histories 算,不另外存狀態:計數跟對話紀錄是同一份資料,
 部署與重啟不歸零,多 worker 也對。三條規則依序檢查,第一條不放行的就是結果 ——
-個人規則在前,狂傳的人被擋的是他自己,不佔全站的名額。
+個人規則在前,狂傳的人被擋的是他自己;全站計數裡每人最多算 m 則,
+超過的部分不佔全站的名額。
 
-「只提醒一次」也不另外記:每分鐘是「剛好第 m+1 則」才提醒;每天是提醒本身也
-寫進 chat_histories(assistant),計數從 d 變 d+1,之後自然進入安靜。
+「只提醒一次」也不另外記:超過個人上限時,看這條規則的提醒在它的窗口內
+(每分鐘:60 秒內;每天:台灣今天)有沒有寫進過 chat_histories —— 沒有就提醒,
+有就安靜。不能靠「計數剛好等於門檻」:非文字訊息、轉真人的 script、還在等模型的
+回答都不經過這裡卻會寫進紀錄,計數會跳過那個值,客人一句提醒都沒收到就被靜音。
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.models import ChatHistory, ChatRole
@@ -34,8 +37,8 @@ _BUSY = "目前詢問的人比較多,請過幾分鐘再傳一次"
 
 class Action(enum.Enum):
     ALLOW = "allow"
-    NOTIFY = "notify"    # 剛好踩到個人上限:回一次提醒
-    SILENT = "silent"    # 已經提醒過:不回
+    NOTIFY = "notify"    # 超過個人上限、這個窗口還沒提醒過:回一次提醒
+    SILENT = "silent"    # 這個窗口已經提醒過:不回
     BUSY = "busy"        # 全站這一分鐘太多:每則都回忙碌訊息
 
 
@@ -72,14 +75,42 @@ def _count(db: Session, *conditions) -> int:
     return db.scalar(select(func.count()).select_from(ChatHistory).where(*conditions))
 
 
+def _notified(db: Session, user_pk: str, content_matches, since: datetime) -> bool:
+    """這條規則的提醒在窗口內寫進過紀錄沒 —— 「只提醒一次」就靠這個,不另外記。"""
+    return _count(db, ChatHistory.user_id == user_pk,
+                  ChatHistory.role == ChatRole.ASSISTANT,
+                  content_matches,
+                  ChatHistory.created_at >= since) > 0
+
+
+def _global_count(db: Session, since: datetime, m: int) -> int:
+    """全站這一分鐘的 user 列,每人最多算 m 則:超過的部分他自己的上限已經擋下,
+    不該再佔全站的名額。m == 0(每人每分鐘關閉)時沒有個人上限可言,用原始計數。"""
+    recent = (ChatHistory.role == ChatRole.USER, ChatHistory.created_at >= since)
+    if not m:
+        return _count(db, *recent)
+    per_user = (select(func.count().label("n"))
+                .select_from(ChatHistory)
+                .where(*recent)
+                .group_by(ChatHistory.user_id)
+                .subquery())
+    capped = case((per_user.c.n > m, m), else_=per_user.c.n)
+    # int():PostgreSQL 的 SUM(bigint) 回傳 numeric,到 Python 是 Decimal
+    return int(db.scalar(select(func.coalesce(func.sum(capped), 0))))
+
+
 def check(db: Session, *, user_pk: str, now: datetime, limits: Limits) -> Verdict:
-    """判定這一則要不要放行。「這一則」必須已經寫進 chat_histories(同一個 session)。
+    """判定這一則要不要放行。「這一則」必須已經 flush 進 chat_histories(同一個
+    session)—— SessionLocal 是 autoflush=False,只 db.add() 還不算寫進去。
 
     任何例外都放行:限流是保護機制,不是主流程 —— 為了它讓正常客人收不到回答,
-    違反「沉默是唯一不被接受的失敗模式」。
+    違反「沉默是唯一不被接受的失敗模式」。查詢包在 savepoint 裡:PostgreSQL 上
+    SQL 一出錯整個交易就作廢,不退回 savepoint 的話,呼叫端的下一個查詢就爆,
+    剛寫進去的這一則也跟著 rollback —— 「放行」就變成了 fallback。
     """
     try:
-        return _check(db, user_pk=user_pk, now=now, limits=limits)
+        with db.begin_nested():
+            return _check(db, user_pk=user_pk, now=now, limits=limits)
     except Exception:  # noqa: BLE001
         logger.warning("限流檢查失敗,放行", exc_info=True)
         return _ALLOW
@@ -95,23 +126,28 @@ def _check(db: Session, *, user_pk: str, now: datetime, limits: Limits) -> Verdi
                    ChatHistory.role == ChatRole.USER,
                    ChatHistory.created_at >= since)
         if n > m:
-            return Verdict(Action.NOTIFY if n == m + 1 else Action.SILENT, "user_minute", n)
+            notified = _notified(db, user_pk, ChatHistory.content == MINUTE_NOTICE, since)
+            return Verdict(Action.SILENT if notified else Action.NOTIFY, "user_minute", n)
 
     d = limits.user_per_day
     if d:
         # 算 AI 回了幾則,不是客人傳了幾則:轉真人期間跟店員來回很多則的客人,
         # 交還 AI 後不該被擋
+        today = taipei_midnight_utc(now)
         n = _count(db, ChatHistory.user_id == user_pk,
                    ChatHistory.role == ChatRole.ASSISTANT,
-                   ChatHistory.created_at >= taipei_midnight_utc(now))
+                   ChatHistory.created_at >= today)
         if n >= d:
-            return Verdict(Action.NOTIFY if n == d else Action.SILENT, "user_day", n)
+            # 每天的提醒後半段隨 contact 變,比對固定的開頭
+            notified = _notified(db, user_pk,
+                                 ChatHistory.content.startswith(_DAY_NOTICE, autoescape=True),
+                                 today)
+            return Verdict(Action.SILENT if notified else Action.NOTIFY, "user_day", n)
 
     g = limits.global_per_minute
     if g:
         # 跨所有公司:額度綁的是同一把 key
-        n = _count(db, ChatHistory.role == ChatRole.USER,
-                   ChatHistory.created_at >= since)
+        n = _global_count(db, since, m)
         if n > g:
             return Verdict(Action.BUSY, "global_minute", n)
 

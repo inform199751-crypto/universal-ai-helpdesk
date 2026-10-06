@@ -191,9 +191,9 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             # 免費模型常塞車,模型沒呼叫工具時客人的緊急狀況就漏掉了。
             decision = match_keyword(rules, text)
             if decision is None:
-                # 限流只擋要打模型的這條路:關鍵字轉真人(上一行)與非文字的固定
-                # 回覆都不花模型額度,而安全觸發不管傳了幾則都要轉。放在「正在
-                # 輸入」之前 —— 被擋的訊息不該讓客人看到輸入中卻什麼都沒收到。
+                # 限流只擋要打模型的這條路:關鍵字轉真人(上面的 match_keyword)與
+                # 非文字的固定回覆都不花模型額度,而安全觸發不管傳了幾則都要轉。放在
+                # 「正在輸入」之前 —— 被擋的訊息不該讓客人看到輸入中卻什麼都沒收到。
                 verdict = ratelimit.check(db, user_pk=user_pk, now=now,
                                           limits=ratelimit.Limits.from_settings(settings))
                 if verdict.action is not ratelimit.Action.ALLOW:
@@ -204,7 +204,7 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                     if reply is None:
                         # 安靜:不回、不標已讀 —— 店家在官方帳號後台看得到有人在狂傳
                         return
-                    # 寫進紀錄:模型下一輪看得懂上下文,「每天只提醒一次」也靠它
+                    # 寫進紀錄:模型下一輪看得懂上下文,「只提醒一次」也靠它
                     db.add(ChatHistory(company_id=company_id, user_id=user_pk,
                                        role=ChatRole.ASSISTANT, content=reply))
                     client.send(reply_token, line_user_id, reply)
