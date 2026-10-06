@@ -42,6 +42,8 @@ class ChatHistory(Base):
     __table_args__ = (
         # 唯一的高頻查詢:取這個人最近 N 則
         Index("ix_chat_user_created", "user_id", "created_at"),
+        # 限流的全站每分鐘計數:只看 created_at、跨所有公司
+        Index("ix_chat_created", "created_at"),
         # 決策 6:去重靠這個 unique 索引,不要自己寫「先查再寫」(有 race
         # condition)。LINE 沒收到 2xx 會重送,插入時撞鍵就代表處理過了,
         # 直接跳過即可。

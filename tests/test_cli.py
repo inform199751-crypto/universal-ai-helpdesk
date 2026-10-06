@@ -419,3 +419,17 @@ def test_main_release_prints_the_count(capsys):
     _human_user(cid, "U1")
     assert main(["release", "--slug", "bistro"]) == 0
     assert "1 位" in capsys.readouterr().out
+
+
+def test_seed_stores_the_contact_from_company_yaml():
+    """提醒文字的「急的話可以直接聯繫 …」靠它;沒存的話那半句永遠不會出現。"""
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    with session_scope() as db:
+        assert db.get(Company, cid).contact == "02-2345-6789"
+
+
+def test_switching_industry_rewrites_the_contact():
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    run_seed("ecommerce", slug="bistro")
+    with session_scope() as db:
+        assert db.get(Company, cid).contact == "service@example.com"

@@ -827,3 +827,158 @@ def test_reciting_a_script_still_keeps_its_own_category(rules, line_out, monkeyp
     assert _replies(line_out) == [SAFETY_SCRIPT]
     (_, _, text), = _pushes(line_out)
     assert text.startswith("【安全】")
+
+
+# --- 速率限制 -----------------------------------------------------------------
+
+from sqlalchemy import text as sql_text  # noqa: E402
+
+from app.models import ChatRole  # noqa: E402
+from app.ratelimit import MINUTE_NOTICE  # noqa: E402
+
+
+def _flood(n, *, user="U1", role=ChatRole.USER, content="x"):
+    """先替這位客人塞 n 則「剛剛」的紀錄。"""
+    now = datetime.now(timezone.utc)
+    with session_scope() as db:
+        c = db.scalar(select(Company).where(Company.slug == "acme"))
+        u = db.scalar(select(User).where(User.company_id == c.id,
+                                         User.line_user_id == user))
+        if u is None:
+            u = User(company_id=c.id, line_user_id=user)
+            db.add(u)
+            db.flush()
+        for _ in range(n):
+            db.add(ChatHistory(company_id=c.id, user_id=u.id, role=role,
+                               content=content, created_at=now))
+
+
+def _set_contact(value):
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).contact = value
+
+
+def _last_row():
+    with session_scope() as db:
+        return db.scalars(select(ChatHistory).order_by(ChatHistory.id.desc())).first()
+
+
+def test_over_the_minute_limit_the_model_is_not_called_and_a_notice_is_sent(
+        line_out, monkeypatch, loading_calls, read_calls):
+    calls = _llm(monkeypatch)
+    _flood(5)
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="M6"))
+    assert calls == []
+    assert loading_calls == []
+    assert _replies(line_out) == [MINUTE_NOTICE]
+    assert read_calls == ["read-M6"]
+    row = _last_row()
+    assert row.role == ChatRole.ASSISTANT and row.content == MINUTE_NOTICE
+
+
+def test_a_silent_message_sends_nothing_and_stays_unread(line_out, monkeypatch, read_calls):
+    calls = _llm(monkeypatch)
+    _flood(6)
+    _flood(1, role=ChatRole.ASSISTANT, content=MINUTE_NOTICE)   # 第 6 則已經回過提醒
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="M7"))
+    assert calls == []
+    assert line_out == []
+    assert read_calls == []
+
+
+def test_global_busy_replies_with_the_contact(line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    _set_contact("02-2345-6789")
+    for i in range(10):
+        _flood(3, user=f"F{i}")                       # 30 則,每人都在個人上限以內
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="M31"))           # 第 31 則
+    assert calls == []
+    assert _replies(line_out) == [
+        "目前詢問的人比較多,請過幾分鐘再傳一次;急的話可以直接聯繫 02-2345-6789。"]
+
+
+def test_the_daily_notice_without_a_contact_has_no_contact_clause(line_out, monkeypatch):
+    _llm(monkeypatch)
+    _flood(20, role=ChatRole.ASSISTANT)
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="M21"))
+    assert _replies(line_out) == ["今天跟我聊的次數已經到上限了,明天再來問我。"]
+
+
+def test_after_the_daily_notice_the_next_message_is_silent(line_out, monkeypatch):
+    """「今天提醒過了沒」是從寫進紀錄的那句提醒找的 —— 這裡驗 webhook 寫的
+    那句(沒有 contact 的版本)真的被認得,第二則不會再提醒一次。"""
+    calls = _llm(monkeypatch)
+    _flood(20, role=ChatRole.ASSISTANT)
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="M21"))
+        _post(client, _body(msg_id="M22"))
+    assert calls == []
+    assert _replies(line_out) == ["今天跟我聊的次數已經到上限了,明天再來問我。"]
+
+
+def test_a_sticker_that_skips_the_threshold_does_not_swallow_the_minute_notice(
+        line_out, monkeypatch):
+    """第 6 則是貼圖:固定回覆不經過限流,計數卻從 5 跳到 6 —— 下一則文字是第 7 則,
+    「剛好第 6 則才提醒」的話客人一句提醒都沒收到,就被靜音了。"""
+    from app.routers.webhook import NON_TEXT_REPLY
+    calls = _llm(monkeypatch)
+    _flood(5)
+    with TestClient(app) as client:
+        _post(client, _image_body(msg_id="IMG6"))
+        _post(client, _body(msg_id="M7"))
+    assert calls == []
+    assert _replies(line_out) == [NON_TEXT_REPLY, MINUTE_NOTICE]
+
+
+def test_a_database_error_inside_the_limiter_still_lets_the_message_through(
+        line_out, monkeypatch):
+    """放行要放得乾淨。PostgreSQL 上 SQL 一出錯整個交易就作廢:沒退回 savepoint 的話,
+    下一個查詢(取歷史)直接爆,客人收到 fallback,剛寫進去的那一則也跟著 rollback。
+    SQLite 不會作廢交易,所以這條只有在 PostgreSQL 的 CI job 上才抓得到。"""
+    calls = _llm(monkeypatch)
+    monkeypatch.setattr(
+        "app.ratelimit._count",
+        lambda db, *c: db.execute(sql_text("SELECT no_such_column FROM chat_histories")).scalar())
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="M1"))
+    assert len(calls) == 1
+    assert _replies(line_out) == ["您好"]
+    with session_scope() as db:
+        u = db.scalar(select(User).where(User.line_user_id == "U1"))
+        roles = db.scalars(select(ChatHistory.role).where(ChatHistory.user_id == u.id)
+                           .order_by(ChatHistory.id)).all()
+    assert [r.value for r in roles] == ["user", "assistant"]
+
+
+def test_a_keyword_transfer_still_happens_over_the_limit(rules, line_out, monkeypatch):
+    """安全觸發不管傳了幾則都要轉 —— 限流只擋要打模型的路徑。"""
+    calls = _llm(monkeypatch)
+    _flood(10)
+    with TestClient(app) as client:
+        _post(client, _body(text="我朋友吃完過敏送醫了", msg_id="M11"))
+    assert calls == []
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_under_the_limits_the_model_still_answers(line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    _flood(4)
+    with TestClient(app) as client:
+        _post(client, _body(msg_id="M5"))
+    assert len(calls) == 1
+    assert _replies(line_out) == ["您好"]
+
+
+def test_a_non_text_message_still_gets_the_canned_reply_over_the_limit(line_out, monkeypatch):
+    """固定回覆不打模型、LINE 的 reply 也不收費 —— 不限流。"""
+    from app.routers.webhook import NON_TEXT_REPLY
+    _llm(monkeypatch)
+    _flood(10)
+    with TestClient(app) as client:
+        _post(client, _image_body(msg_id="M11"))
+    assert _replies(line_out) == [NON_TEXT_REPLY]

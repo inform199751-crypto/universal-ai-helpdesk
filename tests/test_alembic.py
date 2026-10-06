@@ -77,3 +77,30 @@ def test_downgrade_removes_both_columns(alembic_sqlite):
     command.upgrade(cfg, "head")
     command.downgrade(cfg, INITIAL)
     assert not {"escalation_rules", "staff_notify_to"} & _columns(url)
+
+
+ESCALATION = "3f2a9c1d7b4e"
+
+
+def _indexes(url: str, table: str) -> set[str]:
+    engine = create_engine(url)
+    try:
+        return {i["name"] for i in inspect(engine).get_indexes(table)}
+    finally:
+        engine.dispose()
+
+
+def test_upgrade_adds_contact_and_the_created_at_index(alembic_sqlite):
+    """全站每分鐘的 COUNT 只看 created_at;沒有索引就是每則訊息掃一次整張表。"""
+    cfg, url = alembic_sqlite
+    command.upgrade(cfg, "head")
+    assert "contact" in _columns(url)
+    assert "ix_chat_created" in _indexes(url, "chat_histories")
+
+
+def test_downgrade_removes_contact_and_the_created_at_index(alembic_sqlite):
+    cfg, url = alembic_sqlite
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, ESCALATION)
+    assert "contact" not in _columns(url)
+    assert "ix_chat_created" not in _indexes(url, "chat_histories")

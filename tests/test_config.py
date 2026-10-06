@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.config import Settings
 
 
@@ -35,3 +38,11 @@ def test_default_models_both_support_tool_calling(monkeypatch):
     s = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k")
     assert s.openrouter_model == "openrouter/free"
     assert s.openrouter_fallback_model == "nvidia/nemotron-3-super-120b-a12b:free"
+
+
+@pytest.mark.parametrize("field", ["rate_limit_user_per_minute", "rate_limit_user_per_day",
+                                   "rate_limit_global_per_minute"])
+def test_a_negative_rate_limit_is_rejected(field):
+    """0 是「關閉」,負數沒有意義 —— 寫錯的設定要在開機時就爆,不是默默變成關閉。"""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, fernet_key="k", openrouter_api_key="k", **{field: -1})

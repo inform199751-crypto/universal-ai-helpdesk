@@ -24,6 +24,7 @@ from app.agent.handoff import (
 from app.agent.llm import LLMError, complete
 from app.agent.prompt import build_messages
 from app.agent.zh import ensure_traditional
+from app import ratelimit
 from app.config import get_settings
 from app.crypto import decrypt
 from app.database import session_scope
@@ -190,6 +191,26 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             # 免費模型常塞車,模型沒呼叫工具時客人的緊急狀況就漏掉了。
             decision = match_keyword(rules, text)
             if decision is None:
+                # 限流只擋要打模型的這條路:關鍵字轉真人(上面的 match_keyword)與
+                # 非文字的固定回覆都不花模型額度,而安全觸發不管傳了幾則都要轉。放在
+                # 「正在輸入」之前 —— 被擋的訊息不該讓客人看到輸入中卻什麼都沒收到。
+                verdict = ratelimit.check(db, user_pk=user_pk, now=now,
+                                          limits=ratelimit.Limits.from_settings(settings))
+                if verdict.action is not ratelimit.Action.ALLOW:
+                    logger.warning("限流 客人 …%s 規則=%s 計數=%d 動作=%s",
+                                   line_user_id[-6:], verdict.rule, verdict.count,
+                                   verdict.action.name)
+                    reply = ratelimit.reply_text(verdict, company.contact)
+                    if reply is None:
+                        # 安靜:不回、不標已讀 —— 店家在官方帳號後台看得到有人在狂傳
+                        return
+                    # 寫進紀錄:模型下一輪看得懂上下文,「只提醒一次」也靠它
+                    db.add(ChatHistory(company_id=company_id, user_id=user_pk,
+                                       role=ChatRole.ASSISTANT, content=reply))
+                    client.send(reply_token, line_user_id, reply)
+                    _mark_read(client, mark_as_read_token)
+                    return
+
                 # 取最近 N 則,但排除剛剛寫進去的這一句 —— 它會由 build_messages
                 # 以 user 角色放在最後面,重複放會讓模型看到問題出現兩次。
                 rows = db.scalars(

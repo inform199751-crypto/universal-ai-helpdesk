@@ -55,6 +55,11 @@ class Company(Base, TimestampMixin):
         Text, nullable=False, default="我這邊剛剛連線有點問題,可以再問一次嗎?"
     )
 
+    # 店家聯絡方式(company.yaml 的 contact,必填)。原本只被組進 system_prompt;
+    # 限流的提醒文字要單獨用它 ——「急的話可以直接聯繫 …」。電商的是 email,
+    # 所以文字寫「聯繫」不寫「來電」。可為空:遷移前的資料列要重跑 seed 才有值。
+    contact: Mapped[str | None] = mapped_column(String(200))
+
     # 決策 4:HUMAN 模式一定要能自動歸還。轉真人之後如果客服下班忘記切回
     # AI,那位客人就永遠等不到任何回覆(AI 不理他,真人也不在)。這個欄位
     # 搭配 users.mode_expires_at 一起用:進 HUMAN 模式時設一個期限,逾時
