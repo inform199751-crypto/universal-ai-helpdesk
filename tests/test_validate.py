@@ -1,3 +1,5 @@
+import pytest
+
 from app.knowledge.validate import validate
 
 HIGH_RISK = [
@@ -182,3 +184,69 @@ def test_rule10_apologize_without_category_is_fine():
          "script": "很抱歉讓您有這樣的感受。"}
     ])
     assert "ERROR" not in _levels(validate(d), 10)
+
+
+# --- 規則 11、12:booking.yaml ------------------------------------------------
+
+BOOKING = {"label": "訂位", "days": ["二", "三", "四", "五", "六", "日"],
+           "times": ["18:00", "19:00", "20:00"], "capacity": 5, "max_party": 6,
+           "advance_days": 14, "fields": []}
+
+
+def _with_booking(hours="17:00-24:00(週一公休)", **over):
+    data = _ok_data()
+    data["company"] = {**data["company"], "hours": hours}
+    data["booking"] = {**BOOKING, **over}
+    return data
+
+
+def test_a_valid_booking_has_no_findings():
+    assert validate(_with_booking()) == []
+
+
+@pytest.mark.parametrize("over, fragment", [
+    ({"label": ""}, "label"),
+    ({"days": ["八"]}, "days"),
+    ({"days": ["二", "二"]}, "days 有重複"),
+    ({"days": []}, "days"),
+    ({"times": ["18:00", "18:00"]}, "times 有重複"),
+    # 沒加引號的 18:00 會被 PyYAML 當成 60 進位整數 1080 —— 寫錯的人看不出來
+    ({"times": [1080]}, "HH:MM"),
+    ({"times": ["8pm"]}, "HH:MM"),
+    ({"capacity": -1}, "capacity"),
+    ({"max_party": 0}, "max_party"),
+    ({"advance_days": 61}, "advance_days"),
+    ({"advance_days": True}, "advance_days"),
+    ({"fields": [{"key": "service", "label": "看診項目"}]}, "fields[0]"),
+    ({"fields": [{"key": "phone", "label": "電話", "options": ["x"]}]}, "保留字"),
+])
+def test_rule11_malformed_booking_is_error(over, fragment):
+    findings = [f for f in validate(_with_booking(**over)) if f.rule == 11]
+    assert findings and all(f.level == "ERROR" for f in findings)
+    assert any(fragment in f.message for f in findings)
+
+
+def test_rule11_booking_that_is_not_a_mapping_is_error():
+    data = _ok_data()
+    data["booking"] = ["18:00"]
+    assert _levels(validate(data), 11) == ["ERROR"]
+
+
+def test_rule12_a_slot_outside_opening_hours_is_block():
+    findings = validate(_with_booking(times=["15:00", "18:00"]))
+    assert [(f.level, f.rule) for f in findings] == [("BLOCK", 12)]
+    assert "15:00" in findings[0].message
+
+
+def test_rule12_slots_may_fall_in_any_of_several_ranges():
+    data = _with_booking(hours="09:00-12:00、14:00-21:00(週日休診)",
+                         times=["09:30", "14:30"])
+    assert validate(data) == []
+
+
+def test_rule12_a_range_past_midnight_is_understood():
+    assert validate(_with_booking(hours="18:00-02:00", times=["01:00", "19:00"])) == []
+
+
+def test_rule12_is_skipped_for_round_the_clock_shops():
+    assert validate(_with_booking(hours="24小時營業", times=["03:00"])) == []
