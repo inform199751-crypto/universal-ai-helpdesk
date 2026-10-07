@@ -471,13 +471,13 @@ def shops():
         return (mine, me.id), (other, them.id)
 
 
-def _add(shop, days, time="19:00", status="confirmed", name="王小明"):
+def _add(shop, days, time="19:00", status="confirmed", name="王小明", created_at=None):
     company_id, user_id = shop
     with session_scope() as db:
         db.add(Booking(company_id=company_id, user_id=user_id,
                        booking_date=today_taipei(datetime.now(timezone.utc)) + timedelta(days=days),
                        booking_time=time, party_size=2, extra={}, name=name,
-                       phone="0912345678", status=status))
+                       phone="0912345678", status=status, created_at=created_at))
 
 
 def test_bookings_lists_upcoming_confirmed_bookings_in_order(shops):
@@ -515,3 +515,22 @@ def test_bookings_for_an_unknown_slug_exits(shops):
 def test_bookings_with_a_malformed_date_exits(shops):
     with pytest.raises(SystemExit):
         run_bookings("bistro", on="10/09")
+
+
+def test_bookings_includes_created_at_in_taipei_time(shops):
+    """每筆預約都要有 created_at,格式是 MM/DD HH:MM(台灣時間)。"""
+    mine, _ = shops
+    # created_at = 2026-10-06 07:54 UTC = 2026-10-06 15:54 Taiwan
+    _add(mine, 1, name="王小明", created_at=datetime(2026, 10, 6, 7, 54, tzinfo=timezone.utc))
+    rows = run_bookings("bistro")
+    assert len(rows) == 1
+    assert rows[0]["created_at"] == "10/06 15:54"
+
+
+def test_bookings_main_prints_created_at(shops, capsys):
+    """main() 的輸出要包含建立時間。"""
+    mine, _ = shops
+    _add(mine, 1, name="王小明", created_at=datetime(2026, 10, 6, 7, 54, tzinfo=timezone.utc))
+    assert main(["bookings", "--slug", "bistro"]) == 0
+    out = capsys.readouterr().out
+    assert "建立 10/06 15:54" in out

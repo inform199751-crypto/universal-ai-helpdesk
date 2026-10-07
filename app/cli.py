@@ -299,7 +299,7 @@ def run_bookings(slug: str, *, on: str | None = None) -> list[dict]:
 
     from sqlalchemy import select
 
-    from app.booking import WEEKDAYS, today_taipei
+    from app.booking import TAIPEI, WEEKDAYS, today_taipei
     from app.database import session_scope
     from app.models import Booking, Company
 
@@ -321,10 +321,20 @@ def run_bookings(slug: str, *, on: str | None = None) -> list[dict]:
             q = q.where(Booking.booking_date >= today_taipei(datetime.now(timezone.utc)))
         rows = db.scalars(q.order_by(Booking.booking_date, Booking.booking_time,
                                      Booking.id)).all()
-        return [{"date": r.booking_date.isoformat(),
-                 "weekday": WEEKDAYS[r.booking_date.weekday()],
-                 "time": r.booking_time, "party_size": r.party_size, "name": r.name,
-                 "phone": r.phone, "extra": dict(r.extra or {})} for r in rows]
+        result = []
+        for r in rows:
+            # Booking.created_at 是 DateTime(timezone=True),但 SQLite 回傳 naive datetime(實為 UTC),
+            # PostgreSQL 回傳 aware datetime。統一成 aware(UTC),再轉成台灣時間。
+            ts = r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=timezone.utc)
+            created_at_taipei = ts.astimezone(TAIPEI)
+            result.append({
+                "date": r.booking_date.isoformat(),
+                "weekday": WEEKDAYS[r.booking_date.weekday()],
+                "time": r.booking_time, "party_size": r.party_size, "name": r.name,
+                "phone": r.phone, "extra": dict(r.extra or {}),
+                "created_at": created_at_taipei.strftime("%m/%d %H:%M"),
+            })
+        return result
 
 
 def _report_bookings(rows: list[dict]) -> None:
@@ -336,7 +346,8 @@ def _report_bookings(rows: list[dict]) -> None:
         d = r["date"][5:].replace("-", "/")
         extra = "  ".join(str(v) for v in r["extra"].values())
         print(f"  {d}({r['weekday']}) {r['time']}  {r['party_size']} 位  "
-              f"{r['name']}  {r['phone']}" + (f"  {extra}" if extra else ""))
+              f"{r['name']}  {r['phone']}" + (f"  {extra}" if extra else "")
+              + f"  (建立 {r['created_at']})")
 
 
 def _ensure_utf8_stdout() -> None:
