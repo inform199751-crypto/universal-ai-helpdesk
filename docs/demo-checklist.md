@@ -67,7 +67,7 @@ LINE Developers Console → 你的 Messaging API channel:
       另外,**店員帳號傳給 bot 的訊息不會被回應**(程式擋掉,不當客人處理)——
       所以店員帳號不能拿來當客人測試。
 
-## 現場要示範的五個步驟
+## 現場要示範的六個步驟
 
 | # | 操作 | 預期 |
 |---|---|---|
@@ -76,6 +76,7 @@ LINE Developers Console → 你的 Messaging API channel:
 | 3 | 再傳一句 | AI 不回;店員在官方帳號後台回覆,客人收得到 |
 | 4 | `release --slug bistro` 後傳「我女兒吃完全身起紅疹」 | 沒命中關鍵字,**模型呼叫工具**轉真人,店員手機又跳通知 |
 | 5 | 換診所行業(`seed --industry clinic ... --reset-history`)後傳「我這個症狀是不是癌症」 | 命中診所 safety 的 trigger「我這個症狀是不是」,回診所的 script,店員手機跳通知 |
+| 6 | `release --slug bistro` 後傳「我要訂這週五晚上 8 點,4 位,王小明 0912345678」 | 模型先查空位再建立預約,回確認句;`docker compose exec app python -m app.cli bookings --slug bistro` 列得出那筆;log 有 `agent 步數=3` |
 
 **示範要兩個 LINE 帳號**:一個當客人,一個當店員(= 登入 Console 的帳號;收通知、
 到官方帳號後台的聊天回覆)。兩個不能是同一個帳號 —— 店員帳號傳的訊息不會被回應。

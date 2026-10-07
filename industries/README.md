@@ -21,7 +21,7 @@ python -m app.cli list
 
 ## 每個行業裡面是什麼
 
-五份 YAML,結構完全一樣:
+五份必填的 YAML,結構完全一樣;`booking.yaml` 選填:
 
 | 檔案 | 內容 | 壞掉會怎樣 |
 |---|---|---|
@@ -30,6 +30,7 @@ python -m app.cli list
 | `policies.yaml` | 規則與政策 | 同上 |
 | `escalation.yaml` | 什麼時候轉真人(L1/L2/L3) | 沒涵蓋 legal/safety/money/privacy → 規則 5 列為 BLOCK |
 | `glossary.yaml` | 術語解釋 | 術語同時在禁語清單裡 → 規則 7 擋下 |
+| `booking.yaml`(選填) | 預約:時段、每個時段幾組、每筆最多幾人、最遠訂到幾天後、要問的額外欄位 | 格式錯誤 → 規則 11 擋下;時段落在營業時間外 → 規則 12 列為 BLOCK |
 
 ## 加一個新行業
 

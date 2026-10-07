@@ -95,7 +95,7 @@ fields:
     options: [一般皮膚, 青春痘, 醫美諮詢]
 ```
 
-姓名、電話一律必問,不寫在設定裡。`loader` 把 `booking` 列為選填檔案;不存在時 `data["booking"]` 為 `None`。
+姓名、電話一律必問,不寫在設定裡。`loader` 把 `booking` 列為選填檔案;不存在時字典沒有 `booking` 鍵,一律用 `data.get("booking")` 讀取(回傳 `None`)。
 
 ### validate 新規則
 
@@ -176,8 +176,10 @@ fields:
 ## 六、agent loop(`app/agent/loop.py`)
 
 ```python
-def run_agent(messages, *, tools, execute, now, settings) -> AgentResult
+def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_fn) -> AgentResult
 ```
+
+`complete_fn` 由 webhook 傳入它自己的 `complete`(測試可以替換);`max_steps`、`budget_seconds` 取自設定。
 
 - `execute(name, arguments) -> dict`:由 webhook 綁好公司、客人、session 後傳入;loop 本身不碰資料庫
 - `AgentResult`:`text`(最後文字,可能為 `None`)、`handoff`(轉真人的 `ToolCall` 或 `None`)、
@@ -215,7 +217,7 @@ def run_agent(messages, *, tools, execute, now, settings) -> AgentResult
 ## 八、店家端
 
 - `python -m app.cli bookings --slug <slug> [--date YYYY-MM-DD]`:預設列出今天(台灣)以後的 `confirmed` 預約,
-  依日期、時間排序;欄位:日期、星期、時間、人數、姓名、電話、額外欄位、建立時間
+  依日期、時間排序;欄位:日期、星期、時間、人數、姓名、電話、額外欄位、建立時間(台灣時間)
 - 有 `staff_notify_to` 時推播:「【新{label}】10/09(五)20:00 4 位 王小明 0912345678」
   (推播算進 LINE 每月免費訊息額度)
 - 調整名額:改 `booking.yaml`、重跑 seed
