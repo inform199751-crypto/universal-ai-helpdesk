@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -21,10 +22,11 @@ from app.agent.handoff import (
     enter_human_mode,
     is_handoff_script, is_still_human, match_keyword, return_to_ai, staff_message,
 )
-from app.agent.llm import LLMError, complete
+from app.agent.llm import complete
+from app.agent.loop import run_agent
 from app.agent.prompt import build_messages
 from app.agent.zh import ensure_traditional
-from app import ratelimit
+from app import booking, ratelimit
 from app.config import get_settings
 from app.crypto import decrypt
 from app.database import session_scope
@@ -235,6 +237,8 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 ]
                 system_prompt = company.system_prompt
                 fallback = company.fallback_message
+                booking_config = company.booking_config
+                contact = company.contact
 
         handoff_args = dict(company_id=company_id, user_pk=user_pk, client=client,
                             reply_token=reply_token, line_user_id=line_user_id,
@@ -244,54 +248,85 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             _handoff(decision=decision, **handoff_args)
             return
 
-        # 先讓客人的對話框出現「正在輸入」。LLM 要跑 3-15 秒,那段沉默會讓人
-        # 以為訊息沒送出去而重傳。
+        # 先讓客人的對話框出現「正在輸入」。agent loop 可能跑好幾步、最多 45 秒,
+        # 那段沉默會讓人以為訊息沒送出去而重傳。
         #
         # 自己包一層 try:這是純裝飾性的呼叫,不該有能力毀掉主流程。沒有這層的話
         # 它丟出的例外會被最外層的 except 接走,客人收到的是 fallback 訊息而不是
         # 真正的答案 —— 答案明明算得出來,卻因為動畫沒叫成功而丟掉。
         try:
-            client.show_loading(line_user_id)
+            client.show_loading(line_user_id,
+                                seconds=_loading_seconds(settings.agent_total_budget_seconds))
         except Exception:  # noqa: BLE001
             logger.warning("輸入中動畫沒叫成功,不影響回覆", exc_info=True)
 
-        # LLM 呼叫放在 session 外面:不要抓著資料庫連線等十五秒
-        tool = build_tool(rules)
-        try:
-            result = complete(build_messages(system_prompt, history, text),
-                              tools=[tool] if tool else None)
-            answer, tokens, latency = result.text, result.token_count, result.latency_ms
-        except LLMError as exc:
-            logger.warning("LLM 失敗,改送 fallback:%s", exc)
-            result = None
-            answer, tokens, latency = fallback, None, None
+        # 模型呼叫放在 session 外面:不要抓著資料庫連線等好幾十秒。預約工具執行時
+        # 才各自開一個短的 session。
+        tools = [t for t in (build_tool(rules),) if t]
+        if booking_config:
+            system_prompt += "\n\n" + booking.booking_prompt(
+                booking_config, today=booking.today_taipei(now), contact=contact)
+            tools += booking.build_tools(booking_config)
 
-        # agent 層:模型自己決定要轉。同時回了文字與工具呼叫時以工具為準 ——
-        # 模型已經表達「需要真人」。
-        if result is not None and result.tool_call is not None:
-            _handoff(decision=decision_from_tool(rules, result.tool_call.arguments),
-                     **handoff_args)
+        def execute(name: str, arguments: dict) -> dict:
+            if booking_config and name == booking.CHECK_TOOL:
+                with session_scope() as tdb:
+                    return booking.check_availability(
+                        tdb, company_id=company_id, config=booking_config,
+                        contact=contact, now=datetime.now(timezone.utc),
+                        arguments=arguments)
+            if booking_config and name == booking.CREATE_TOOL:
+                with session_scope() as tdb:
+                    return booking.create_booking(
+                        tdb, company_id=company_id, user_pk=user_pk,
+                        config=booking_config, contact=contact,
+                        now=datetime.now(timezone.utc), arguments=arguments)
+            return {"ok": False, "error": "沒有這個工具"}
+
+        agent = run_agent(build_messages(system_prompt, history, text),
+                          tools=tools or None, execute=execute,
+                          max_steps=settings.agent_max_steps,
+                          budget_seconds=settings.agent_total_budget_seconds,
+                          complete_fn=complete)
+        logger.info("agent 步數=%d 工具=%s", agent.steps, ",".join(agent.tools_used) or "無")
+
+        # 預約成立了,但送出去的若不是模型自己的回答(模型失敗、轉真人、安全網),
+        # 就由程式補確認句 —— 客人絕不能訂好了卻不知道。
+        confirmation = ""
+        if agent.booking:
+            b = agent.booking
+            logger.info("%s成立 客人 …%s %s %s %s 位", booking_config["label"],
+                        line_user_id[-6:], b["date"], b["time"], b["party_size"])
+            confirmation = booking.confirmation_text(booking_config, b)
+            if staff_to:
+                _push_staff(client, staff_to, booking.staff_message(booking_config, b))
+
+        # agent 層:模型自己決定要轉。轉真人優先於同一回應裡的其他工具(loop 處理)。
+        if agent.handoff is not None:
+            _handoff(decision=decision_from_tool(rules, agent.handoff.arguments),
+                     prefix=confirmation, **handoff_args)
             return
 
-        # F1b 安全網:模型沒呼叫工具,卻照 prompt 把 script 整句念出來 ——
-        # 客人聽起來像被轉了,實際上沒切 HUMAN、店員也沒收到通知,是 spec
-        # §四警告的失敗模式。當成轉真人處理,不要照樣把 script 當一般答案送出。
-        if result is not None:
-            recited = decision_from_recited_script(rules, result.text)
+        if agent.text is None:
+            # 模型失敗或超時。已經成立預約的話只送確認句 —— 客人要辦的事辦成了,
+            # 再接「連線有點問題,可以再問一次嗎」只會讓人以為沒訂到。
+            answer = confirmation or fallback
+            tokens, latency = None, None
+        else:
+            # F1b 安全網:模型沒呼叫工具,卻照 prompt 把 script 整句念出來 ——
+            # 客人聽起來像被轉了,實際上沒切 HUMAN、店員也沒收到通知。
+            recited = decision_from_recited_script(rules, agent.text)
             if recited is not None:
-                _handoff(decision=recited, **handoff_args)
+                _handoff(decision=recited, prefix=confirmation, **handoff_args)
                 return
-            # 第二道:沒照念 script,而是自己改寫成「我將為您轉接」(2026-09-29
-            # 真機,2.6B 的小模型)。排在念 script 那道之後 —— 店家的 script
-            # 本身也含「請店長」這類字,照念時要保留它自己的類別與原句。
-            promised = decision_from_promised_transfer(result.text)
+            # 第二道:沒照念 script,而是自己改寫成「我將為您轉接」(2026-09-29 真機)。
+            promised = decision_from_promised_transfer(agent.text)
             if promised is not None:
-                _handoff(decision=promised, **handoff_args)
+                _handoff(decision=promised, prefix=confirmation, **handoff_args)
                 return
-
-        # 只有模型真的回了答案才加:fallback 前面接「專員不在線上」沒有意義
-        if result is not None:
-            answer = expired_prefix + answer
+            # 只有模型真的回了答案才加:fallback 前面接「專員不在線上」沒有意義
+            answer = expired_prefix + agent.text
+            tokens, latency = agent.token_count, agent.latency_ms
 
         # 簡繁兜底要在寫入資料庫之前 —— 對話紀錄要跟客人實際看到的一致。
         # prompt 已經規定繁體,但那只降低漂移消不掉(真機上出現過「停车位」)。
@@ -326,24 +361,45 @@ def _mark_read(client: LineClient, mark_as_read_token: str) -> None:
         logger.warning("標示已讀沒成功,不影響回覆", exc_info=True)
 
 
+def _loading_seconds(budget: float) -> int:
+    """LINE 只接受 5 到 60 秒、5 的倍數,不合法直接回 400。"""
+    return max(5, min(60, int(math.ceil(budget / 5) * 5)))
+
+
+def _push_staff(client: LineClient, staff_to: str, message: str) -> None:
+    """新預約通知店員。自己包一層:推播失敗不能影響已經成立的預約與給客人的回覆。"""
+    try:
+        if not client.push(staff_to, message):
+            logger.error("新預約的店員通知送不出去(%s)", staff_to)
+    except Exception:  # noqa: BLE001
+        logger.exception("新預約的店員通知爆炸")
+
+
 def _handoff(*, company_id: str, user_pk: str, client: LineClient,
              reply_token: str, line_user_id: str, decision: Decision, text: str,
-             staff_to: str | None, timeout_minutes: int, customer: str) -> None:
+             staff_to: str | None, timeout_minutes: int, customer: str,
+             prefix: str = "") -> None:
     """轉真人。規則層與 agent 層共用 —— 兩層行為保證一致。
 
     先回客人、再推播店員:reply token 約一分鐘有效,推播沒有時限。
     推播失敗照樣維持 HUMAN(spec 決策 6):客人已經被告知「會有人聯繫」,
     AI 這時又開始回答反而更混亂。
+    prefix:本次成立的預約確認句,接在轉真人那句話前面。
     """
     now = datetime.now(timezone.utc)
     with session_scope() as db:
         enter_human_mode(db.get(User, user_pk), timeout_minutes=timeout_minutes, now=now)
+        if prefix:
+            # 確認句自己一列:script 那一列要保持原樣,is_handoff_script 才認得出來
+            # (F1a 的歷史標記靠它)
+            db.add(ChatHistory(company_id=company_id, user_id=user_pk,
+                               role=ChatRole.ASSISTANT, content=prefix))
         db.add(ChatHistory(company_id=company_id, user_id=user_pk,
                            role=ChatRole.ASSISTANT, content=decision.script))
     # 給示範現場正面的 log 證據:轉真人這件事本身,以及是規則轉的還是
     # 模型轉的,不必等到查資料庫才知道。
     logger.info("轉真人 category=%s 依據=%s", decision.category, decision.basis)
-    if not client.send(reply_token, line_user_id, decision.script):
+    if not client.send(reply_token, line_user_id, prefix + decision.script):
         # reply 跟 push 都失敗:客人已經進了 HUMAN 模式,卻什麼都沒收到 ——
         # 比推播失敗更嚴重(推播失敗客人至少收得到 script)。
         logger.error("轉真人的回覆送不出去(%s),客人在 HUMAN 模式但沒收到任何訊息",

@@ -982,3 +982,142 @@ def test_a_non_text_message_still_gets_the_canned_reply_over_the_limit(line_out,
     with TestClient(app) as client:
         _post(client, _image_body(msg_id="M11"))
     assert _replies(line_out) == [NON_TEXT_REPLY]
+
+# --- 預約 agent ---------------------------------------------------------------
+
+from datetime import date  # noqa: E402
+
+from app import booking  # noqa: E402
+from app.models import Booking  # noqa: E402
+
+BOOKING = {"label": "訂位", "days": list("一二三四五六日"),
+           "times": ["18:00", "19:00", "20:00"], "capacity": 5, "max_party": 6,
+           "advance_days": 14, "fields": []}
+
+
+@pytest.fixture
+def bookable():
+    """acme 開放預約,回傳三天後的日期(避開「今天的時段已經過了」)。"""
+    with session_scope() as db:
+        c = db.scalar(select(Company).where(Company.slug == "acme"))
+        c.booking_config = BOOKING
+        c.contact = "02-2345-6789"
+    return (booking.today_taipei(datetime.now(timezone.utc)) + timedelta(days=3)).isoformat()
+
+
+def _llm_seq(monkeypatch, *results):
+    """依序回傳預先寫好的模型回應(可以是 LLMError);記下每次的 messages 與 tools。"""
+    calls = []
+    queue = list(results)
+
+    def fake(messages, **kw):
+        calls.append({"messages": list(messages), **kw})
+        r = queue.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr("app.routers.webhook.complete", fake)
+    return calls
+
+
+def _tool_calls(*calls):
+    return LLMResult("", token_count=1, latency_ms=1, tool_call=calls[0], tool_calls=tuple(calls))
+
+
+def _args(day, **over):
+    return {"date": day, "time": "20:00", "party_size": 4, "name": "王小明",
+            "phone": "0912-345-678", **over}
+
+
+def _expected_confirmation(day, time, n):
+    d = date.fromisoformat(day)
+    return f"已為您訂位 {d.month:02d}/{d.day:02d}({'一二三四五六日'[d.weekday()]}){time},{n} 位,訂位人王小明。"
+
+
+def test_a_booking_conversation_saves_the_booking_and_sends_the_models_answer(
+        bookable, line_out, monkeypatch):
+    day = bookable
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("check_availability", {"date": day, "party_size": 4}, id="c1")),
+                     _tool_calls(ToolCall("create_booking", _args(day), id="c2")),
+                     LLMResult("已為您訂好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="週五晚上 8 點 4 位,王小明 0912-345-678"))
+    assert _replies(line_out) == ["已為您訂好"]
+    with session_scope() as db:
+        (row,) = db.scalars(select(Booking)).all()
+        assert (row.booking_time, row.party_size, row.phone) == ("20:00", 4, "0912345678")
+        roles = [r.role.value for r in db.scalars(select(ChatHistory).order_by(ChatHistory.id))]
+    assert roles == ["user", "assistant"]   # 中間的工具呼叫不進對話紀錄
+    assert "日期對照" in calls[0]["messages"][0]["content"]
+    assert {t["function"]["name"] for t in calls[0]["tools"]} >= {"check_availability",
+                                                                   "create_booking"}
+
+
+def test_when_the_model_fails_after_booking_only_the_confirmation_is_sent(
+        bookable, line_out, monkeypatch):
+    """客人要辦的事辦成了 —— 接一句「連線有點問題,可以再問一次嗎」只會讓人以為沒訂到。"""
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day, time="19:00", party_size=2), id="c1")),
+             LLMError("上游掛了"))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == [_expected_confirmation(day, "19:00", 2)]
+
+
+def test_a_handoff_after_booking_still_tells_the_customer_it_is_booked(
+        bookable, rules, line_out, monkeypatch):
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             _tool_calls(ToolCall("transfer_to_human", {"category": "safety"}, id="c2")))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位,另外我小孩對花生很敏感"))
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4) + SAFETY_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN
+    assert any("【新訂位】" in p[2] for p in _pushes(line_out))
+
+
+def test_the_staff_is_told_about_a_new_booking(bookable, line_out, monkeypatch):
+    day = bookable
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = "Ustaff"
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             LLMResult("好的", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    d = date.fromisoformat(day)
+    assert _pushes(line_out) == [("push", "Ustaff",
+                                  f"【新訂位】{d.month:02d}/{d.day:02d}({'一二三四五六日'[d.weekday()]})"
+                                  f"20:00 4 位 王小明 0912345678")]
+
+
+def test_an_unknown_tool_gets_an_error_result_and_the_loop_goes_on(
+        bookable, line_out, monkeypatch):
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("cancel_booking", {}, id="c1")),
+                     LLMResult("抱歉,取消請直接來電", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="我要取消訂位"))
+    assert json.loads(calls[1]["messages"][-1]["content"]) == {"ok": False, "error": "沒有這個工具"}
+    assert _replies(line_out) == ["抱歉,取消請直接來電"]
+
+
+def test_without_a_booking_config_there_are_no_booking_tools(rules, line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="嗨"))
+    assert [t["function"]["name"] for t in calls[0]["tools"]] == ["transfer_to_human"]
+
+
+def test_the_typing_animation_lasts_as_long_as_the_agent_budget(line_out, monkeypatch):
+    seconds = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.show_loading",
+                        lambda self, uid, seconds_=None, **kw: seconds.append(kw.get("seconds", seconds_)) or True)
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="嗨"))
+    assert seconds == [45]
