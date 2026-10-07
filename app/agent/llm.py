@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import httpx
 
@@ -41,6 +41,9 @@ class ToolCall:
     """
     name: str
     arguments: dict
+    # 上游給的 id。工具結果放回對話時要靠它對上是哪一個呼叫。不參與比較 ——
+    # 判斷「是不是同一個呼叫」看的是名稱與參數,id 每次都不一樣。
+    id: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,9 @@ class LLMResult:
     model: str | None = None
     # 放在最後,既有的 LLMResult("文字", token_count=..., latency_ms=...) 不受影響
     tool_call: ToolCall | None = None
+    # 這一步所有的工具呼叫(agent loop 會依序執行);tool_call 保留 = 第一個,
+    # 既有呼叫端不用改
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,27 +92,29 @@ def _endpoints(s) -> list[_Endpoint]:
     return endpoints
 
 
-def _parse_tool_call(message: dict) -> ToolCall | None:
-    """只取第一個工具呼叫。目前只提供一個工具,多的沒有意義。"""
-    calls = message.get("tool_calls") or []
-    if not calls:
-        return None
-    fn = calls[0].get("function") or {}
-    raw_arguments = fn.get("arguments")
+def _parse_arguments(raw) -> dict:
     # arguments 可能已經是字典(模型或上游直接傳的),可能是 JSON 字串,
     # 也可能是其他型別。只有字典才是有效的,其他都降級到 {}。
-    if isinstance(raw_arguments, dict):
-        arguments = raw_arguments
-    elif isinstance(raw_arguments, str):
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
         try:
-            arguments = json.loads(raw_arguments)
+            parsed = json.loads(raw)
         except ValueError:
-            arguments = {}
-    else:
-        arguments = {}
-    if not isinstance(arguments, dict):
-        arguments = {}
-    return ToolCall(name=fn.get("name") or "", arguments=arguments)
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _parse_tool_calls(message: dict) -> tuple[ToolCall, ...]:
+    """這一步所有的工具呼叫。上游沒給 id 時自己編一個 —— 放回對話時一定要有。"""
+    out = []
+    for i, call in enumerate(message.get("tool_calls") or []):
+        fn = call.get("function") or {}
+        out.append(ToolCall(name=fn.get("name") or "",
+                            arguments=_parse_arguments(fn.get("arguments")),
+                            id=call.get("id") or f"call_{i}"))
+    return tuple(out)
 
 
 def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint,
@@ -133,8 +141,7 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
             chunks = []
             for chunk in r.iter_bytes():
                 if time.monotonic() > deadline:
-                    raise LLMError(
-                        f"超過整體時間上限 {s.llm_total_budget_seconds:g} 秒,上游還沒送完")
+                    raise LLMError("超過時間上限,上游還沒送完")
                 chunks.append(chunk)
             raw = b"".join(chunks)
     except httpx.HTTPError as exc:
@@ -157,7 +164,8 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
     choices = body.get("choices") or []
     message = (choices[0].get("message") or {}) if choices else {}
     text = (message.get("content") or "").strip()
-    tool_call = _parse_tool_call(message)
+    tool_calls = _parse_tool_calls(message)
+    tool_call = tool_calls[0] if tool_calls else None
     # 呼叫工具時 content 本來就常常是 null —— 兩個都沒有才算失敗
     if not text and tool_call is None:
         raise LLMError("拿不到內容 —— 不能把空字串送給客人")
@@ -169,13 +177,15 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
     # slug,退回機制才看得出「今天是備援模型在答」。
     logger.info("模型 %s(%s)回答完成(上游實際:%s,工具呼叫:%s)",
                model, endpoint.provider, body.get("model"),
-               tool_call.name if tool_call else "無")
+               ",".join(c.name for c in tool_calls) or "無")
     return LLMResult(text=text, token_count=usage.get("total_tokens"),
-                     latency_ms=elapsed, model=model, tool_call=tool_call)
+                     latency_ms=elapsed, model=model, tool_call=tool_call,
+                     tool_calls=tool_calls)
 
 
 def complete(messages: list[dict], *, tools: list[dict] | None = None,
-             client: httpx.Client | None = None) -> LLMResult:
+             client: httpx.Client | None = None,
+             deadline: float | None = None) -> LLMResult:
     """依序試每個上游(見 _endpoints),第一個答得出來的就用。
 
     這不是「延後重送」—— 那會讓客人收到延遲很久的孤立訊息。這裡是在
@@ -183,6 +193,7 @@ def complete(messages: list[dict], *, tools: list[dict] | None = None,
 
     所有上游合計受 llm_total_budget_seconds 限制,不會越過 LINE reply token
     的一分鐘效期。回傳的 latency_ms 也是合計的 —— 客人實際等了多久。
+    deadline(time.monotonic() 的秒數)有傳就用它 —— agent loop 每一步拿的是剩下的時間。
     """
     s = get_settings()
     endpoints = _endpoints(s)
@@ -192,7 +203,8 @@ def complete(messages: list[dict], *, tools: list[dict] | None = None,
     # 合計的截止時間,不是每個模型各一份 —— 各自一份的話最壞是兩倍時間,
     # 正好越過 reply token 的效期。
     started = time.monotonic()
-    deadline = started + s.llm_total_budget_seconds
+    if deadline is None:
+        deadline = started + s.llm_total_budget_seconds
     failures: list[str] = []
     try:
         for i, endpoint in enumerate(endpoints):

@@ -480,3 +480,58 @@ def test_the_log_says_which_provider_answered(two_providers, caplog):
     done = [rec.message for rec in caplog.records if "回答完成" in rec.message]
     assert len(done) == 2
     assert "NVIDIA" in done[0] and "OpenRouter" in done[1]
+
+
+# --- agent loop 需要的:所有工具呼叫、截止時間 ---------------------------------
+
+def _two_tool_calls():
+    return httpx.Response(200, json={"choices": [{"message": {"content": None, "tool_calls": [
+        {"id": "c1", "type": "function",
+         "function": {"name": "check_availability", "arguments": '{"date": "2026-10-09"}'}},
+        {"id": "c2", "type": "function",
+         "function": {"name": "create_booking", "arguments": '{"time": "20:00"}'}}]}}],
+        "usage": {"total_tokens": 9}})
+
+
+def test_every_tool_call_is_returned_with_its_id():
+    """工具結果放回對話時,tool_call_id 要對得上 —— 只回第一個的話,第二個工具永遠不會被執行。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _two_tool_calls()))
+    assert [(c.name, c.arguments, c.id) for c in r.tool_calls] == [
+        ("check_availability", {"date": "2026-10-09"}, "c1"),
+        ("create_booking", {"time": "20:00"}, "c2")]
+    assert r.tool_call == ToolCall("check_availability", {"date": "2026-10-09"})
+
+
+def test_a_tool_call_without_an_id_gets_one():
+    resp = httpx.Response(200, json={"choices": [{"message": {"tool_calls": [
+        {"type": "function", "function": {"name": "check_availability", "arguments": "{}"}}]}}]})
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: resp))
+    assert r.tool_calls[0].id == "call_0"
+
+
+def test_tool_results_are_sent_upstream_unchanged():
+    msgs = [{"role": "user", "content": "嗨"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "check_availability", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"ok": true}'}]
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content)["messages"])
+        return _ok()
+
+    complete(msgs, client=_http(handler))
+    assert seen == [msgs]
+
+
+def test_a_deadline_overrides_the_default_budget():
+    """agent loop 的每一步拿的是剩下的時間。不照 deadline 停的話,一步就能吃掉整個 loop 的預算。"""
+    started = _time.monotonic()
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_by_model({PREFERRED: _trickling(), FALLBACK: _trickling()})),
+                 deadline=_time.monotonic() + 0.5)
+    assert _time.monotonic() - started < TRICKLE_SECONDS
