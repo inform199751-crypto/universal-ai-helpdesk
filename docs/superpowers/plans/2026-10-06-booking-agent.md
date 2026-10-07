@@ -744,6 +744,13 @@ def test_slots_already_past_today_are_unavailable(ids):
     assert [s["available"] for s in slots] == [False, True, True]
 
 
+def test_today_is_counted_in_taipei_time(ids):
+    """UTC 10/06 17:00 已經是台灣 10/07 01:00 —— 用 UTC 日期的話,昨天還訂得到。"""
+    late = datetime(2026, 10, 6, 17, 0, tzinfo=timezone.utc)
+    assert "只能訂位 10/07~10/21" in _check(
+        ids, {"date": "2026-10-06", "party_size": 2}, now=late)["error"]
+
+
 # --- 建立預約 -----------------------------------------------------------------
 
 def test_a_valid_booking_is_saved_with_a_normalised_phone(ids):
@@ -1140,7 +1147,7 @@ Expected: 全部 passed。
 |---|---|
 | `>= config["capacity"]` → `> config["capacity"]` | `test_a_full_slot_is_refused` |
 | 拿掉防重複那段(`existing` 查詢與 return) | `test_booking_the_same_slot_twice_returns_the_first_booking` |
-| `today_taipei(now)` → `now.date()`(用 UTC 日期) | `test_slots_already_past_today_are_unavailable` 或 `test_a_slot_already_past_today_is_refused` |
+| `today_taipei` 的函式本體 `now.astimezone(TAIPEI).date()` → `now.date()`(用 UTC 日期) | `test_today_is_counted_in_taipei_time` |
 | `_weekday(d) not in config["days"]` → `False` | `test_check_explains_why_it_cannot_answer[args0-…]` |
 | `PHONE_RE` 改成 `r"^0\d{8,10}$"` | `test_invalid_bookings_are_refused_with_a_reason[patch9-電話格式]` |
 | `booking_prompt` 的對照表 `range(config["advance_days"] + 1)` → `range(config["advance_days"])` | `test_the_prompt_gives_today_and_a_date_table_with_closed_days` |
@@ -1513,6 +1520,15 @@ def test_tokens_are_summed_across_steps():
     assert _run(s, lambda n, a: {}).token_count == 17
 
 
+def test_latency_is_the_sum_of_each_steps_model_latency():
+    """跟以前一樣記模型花了多久(test_webhook 斷言紀錄裡的 latency_ms 等於模型回報的值)。"""
+    s = Script(LLMResult("", token_count=1, latency_ms=300,
+                         tool_call=_call("check_availability"),
+                         tool_calls=(_call("check_availability"),)),
+               LLMResult("好", token_count=1, latency_ms=200))
+    assert _run(s, lambda n, a: {}).latency_ms == 500
+
+
 def test_a_result_that_only_fills_tool_call_still_counts_as_a_tool_call():
     """既有的測試替身只填 tool_call、沒填 tool_calls —— loop 要一樣認得。"""
     s = Script(LLMResult("", token_count=1, latency_ms=1,
@@ -1583,17 +1599,16 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
               execute: Callable[[str, dict], dict], max_steps: int,
               budget_seconds: float,
               complete_fn: Callable[..., LLMResult]) -> AgentResult:
-    started = time.monotonic()
-    deadline = started + budget_seconds
+    deadline = time.monotonic() + budget_seconds
     msgs = list(messages)
     booking: dict | None = None
     used: list[str] = []
     tokens: int | None = None
+    latency = 0  # 各步模型回報的 latency 加總(含每一步裡的備援),跟以前記的是同一種數字
 
     def finish(text: str | None, steps: int, handoff: ToolCall | None = None) -> AgentResult:
         return AgentResult(text=text, handoff=handoff, booking=booking, steps=steps,
-                           tools_used=tuple(used), token_count=tokens,
-                           latency_ms=int((time.monotonic() - started) * 1000))
+                           tools_used=tuple(used), token_count=tokens, latency_ms=latency)
 
     for step in range(1, max_steps + 1):
         if deadline - time.monotonic() < MIN_STEP_SECONDS:
@@ -1607,6 +1622,7 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
             return finish(None, step)
         if result.token_count is not None:
             tokens = (tokens or 0) + result.token_count
+        latency += result.latency_ms
 
         # 最後一步沒給工具;上游若還是回了工具呼叫,也不執行
         calls = () if last else _calls(result)
@@ -2209,9 +2225,9 @@ git ls-files 'app/*.py' 'app/**/*.py' | sort -u | xargs cat | wc -l
 
 - [ ] **Step 2: README**
 
-在 `## 三個示範行業` 這一行**之前**插入一節:
+在 `## 三個示範行業` 這一行**之前**插入一節(外層用 `~~~` 圍起來,因為內容本身有 ``` 程式碼區塊):
 
-```markdown
+~~~markdown
 ## agent:模型自己決定下一步
 
 餐廳與診所的資料夾多一份選填的 `booking.yaml`(時段、名額、要問的欄位),bot 就會幫客人預約。
@@ -2231,7 +2247,7 @@ git ls-files 'app/*.py' 'app/**/*.py' | sort -u | xargs cat | wc -l
 - 預約成立但送出的不是模型的回答(模型失敗、轉真人)時,程式補一句確認 —— 客人絕不會訂好了卻不知道
 - 電商沒有 `booking.yaml`,就沒有預約工具 —— 一樣不改程式碼
 - 店家查預約:`python -m app.cli bookings --slug bistro`
-```
+~~~
 
 「狀態」一節:在速率限制那一段之後加一段:
 
