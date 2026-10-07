@@ -1121,3 +1121,74 @@ def test_the_typing_animation_lasts_as_long_as_the_agent_budget(line_out, monkey
     with TestClient(app) as client:
         _post(client, _body(text="嗨"))
     assert seconds == [45]
+
+
+def test_a_duplicate_booking_is_not_announced_to_the_staff_again(bookable, line_out, monkeypatch):
+    """客人改人數、模型又呼叫一次 create_booking:同一時段已經有這位客人的預約,
+    工具回 duplicate。店員早就收過那一筆的「新訂位」,不該再收一次(spec §八)。"""
+    day = bookable
+    with session_scope() as db:
+        acme = db.scalar(select(Company).where(Company.slug == "acme"))
+        acme.staff_notify_to = "Ustaff"
+        user = User(company_id=acme.id, line_user_id="U1")
+        db.add(user)
+        db.flush()
+        db.add(Booking(company_id=acme.id, user_id=user.id, booking_date=date.fromisoformat(day),
+                       booking_time="20:00", party_size=2, name="王小明", phone="0912345678",
+                       status="confirmed"))
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day, party_size=4), id="c1")),
+             LLMResult("已幫您確認", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="人數改成 4 位"))
+    assert _pushes(line_out) == []
+    assert _replies(line_out) == ["已幫您確認"]
+    with session_scope() as db:
+        assert len(db.scalars(select(Booking)).all()) == 1
+
+
+def test_a_new_booking_followed_by_a_duplicate_is_announced_once(bookable, line_out, monkeypatch):
+    """同一輪裡先成立、模型又重複呼叫一次:店員收到一則,不是零則也不是兩則。"""
+    day = bookable
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = "Ustaff"
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             _tool_calls(ToolCall("create_booking", _args(day), id="c2")),
+             LLMResult("好的", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert len(_pushes(line_out)) == 1
+    assert "【新訂位】" in _pushes(line_out)[0][2]
+
+
+def test_the_staff_push_for_a_booking_comes_after_the_customer_is_answered(
+        bookable, line_out, monkeypatch):
+    """reply token 約一分鐘有效、loop 最多用 45 秒;推播沒有時限,所以排在回覆後面。"""
+    day = bookable
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = "Ustaff"
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             LLMResult("好的", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert [e[0] for e in line_out] == ["reply", "push"]
+
+
+@pytest.mark.parametrize("second_response", [
+    _tool_calls(ToolCall("transfer_to_human", {"category": "safety"}, id="c2")),   # 模型呼叫工具
+    LLMResult(SAFETY_SCRIPT, token_count=1, latency_ms=1),                          # 照念 script
+    LLMResult("由於這涉及健康問題,我將為您轉接給專業人員協助。",
+              token_count=1, latency_ms=1),                                         # 口頭說要轉接
+], ids=["tool", "recited", "promised"])
+def test_the_customer_is_answered_before_the_booking_push_even_when_handing_off(
+        second_response, bookable, rules, line_out, monkeypatch):
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             second_response)
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位,另外我小孩對花生很敏感"))
+    assert line_out[0][0] == "reply"
+    assert any("【新訂位】" in p[2] for p in _pushes(line_out))

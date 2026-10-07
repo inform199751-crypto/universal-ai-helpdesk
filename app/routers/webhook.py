@@ -268,6 +268,10 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 booking_config, today=booking.today_taipei(now), contact=contact)
             tools += booking.build_tools(booking_config)
 
+        # 這一輪真正新增的預約。店員只通知這些:模型重複呼叫 create_booking 時
+        # 工具回 duplicate(同一位客人同一時段已經有一筆),那一筆店員早就收過了。
+        new_bookings: list[dict] = []
+
         def execute(name: str, arguments: dict) -> dict:
             if booking_config and name == booking.CHECK_TOOL:
                 with session_scope() as tdb:
@@ -277,10 +281,14 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                         arguments=arguments)
             if booking_config and name == booking.CREATE_TOOL:
                 with session_scope() as tdb:
-                    return booking.create_booking(
+                    result = booking.create_booking(
                         tdb, company_id=company_id, user_pk=user_pk,
                         config=booking_config, contact=contact,
                         now=datetime.now(timezone.utc), arguments=arguments)
+                # session 離開(commit 成功)之後才記:commit 失敗不算成立
+                if result.get("ok") and not result.get("duplicate"):
+                    new_bookings.append(result["booking"])
+                return result
             return {"ok": False, "error": "沒有這個工具"}
 
         agent = run_agent(build_messages(system_prompt, history, text),
@@ -291,20 +299,27 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
         logger.info("agent 步數=%d 工具=%s", agent.steps, ",".join(agent.tools_used) or "無")
 
         # 預約成立了,但送出去的若不是模型自己的回答(模型失敗、轉真人、安全網),
-        # 就由程式補確認句 —— 客人絕不能訂好了卻不知道。
+        # 就由程式補確認句 —— 客人絕不能訂好了卻不知道。重複呼叫時 agent.booking
+        # 是已存在的那一筆,對客人再說一次無妨。
         confirmation = ""
         if agent.booking:
-            b = agent.booking
-            logger.info("%s成立 客人 …%s %s %s %s 位", booking_config["label"],
-                        line_user_id[-6:], b["date"], b["time"], b["party_size"])
-            confirmation = booking.confirmation_text(booking_config, b)
-            if staff_to:
-                _push_staff(client, staff_to, booking.staff_message(booking_config, b))
+            confirmation = booking.confirmation_text(booking_config, agent.booking)
+
+        def notify_new_bookings() -> None:
+            # 一定要在回覆客人之後才呼叫:reply token 約一分鐘有效、loop 最多用掉
+            # 45 秒,推播沒有時限(跟 _handoff 先回客人、再推播店員同一條規則)。
+            for b in new_bookings:
+                logger.info("%s成立 客人 …%s %s %s %s 位", booking_config["label"],
+                            line_user_id[-6:], b["date"], b["time"], b["party_size"])
+                if staff_to:
+                    _push_staff(client, staff_to,
+                                booking.staff_message(booking_config, b))
 
         # agent 層:模型自己決定要轉。轉真人優先於同一回應裡的其他工具(loop 處理)。
         if agent.handoff is not None:
             _handoff(decision=decision_from_tool(rules, agent.handoff.arguments),
                      prefix=confirmation, **handoff_args)
+            notify_new_bookings()
             return
 
         if agent.text is None:
@@ -318,11 +333,13 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             recited = decision_from_recited_script(rules, agent.text)
             if recited is not None:
                 _handoff(decision=recited, prefix=confirmation, **handoff_args)
+                notify_new_bookings()
                 return
             # 第二道:沒照念 script,而是自己改寫成「我將為您轉接」(2026-09-29 真機)。
             promised = decision_from_promised_transfer(agent.text)
             if promised is not None:
                 _handoff(decision=promised, prefix=confirmation, **handoff_args)
+                notify_new_bookings()
                 return
             # 只有模型真的回了答案才加:fallback 前面接「專員不在線上」沒有意義
             answer = expired_prefix + agent.text
@@ -343,6 +360,7 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
         # 轉真人與 HUMAN 模式走不到這裡 —— 那些留給真人在後台點開才已讀,
         # 客人看到「未讀」代表真人還沒看到。
         _mark_read(client, mark_as_read_token)
+        notify_new_bookings()
     except Exception:
         # 沉默是唯一不被接受的失敗模式
         logger.exception("背景處理爆炸,嘗試送出 fallback")
