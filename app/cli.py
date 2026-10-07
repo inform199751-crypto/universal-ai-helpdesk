@@ -184,6 +184,8 @@ def run_seed(industry: str, *, slug: str, channel_secret: str | None = None,
         company.escalation_rules = list(data.get("escalation") or [])
         company.vector_collection = f"kb_{slug}"
         company.contact = data["company"]["contact"]
+        # 沒有 booking.yaml 的行業要寫回 None —— 從餐廳換成電商時,不能留著餐廳的預約設定
+        company.booking_config = data.get("booking")
         # 只覆寫這次有給的東西。沒給是「不動」,不是「清空」。
         if channel_secret:
             company.line_channel_secret_enc = encrypt(channel_secret)

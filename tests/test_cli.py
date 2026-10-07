@@ -433,3 +433,18 @@ def test_switching_industry_rewrites_the_contact():
     run_seed("ecommerce", slug="bistro")
     with session_scope() as db:
         assert db.get(Company, cid).contact == "service@example.com"
+
+
+def test_seed_stores_the_booking_config():
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    with session_scope() as db:
+        config = db.get(Company, cid).booking_config
+    assert config["label"] == "訂位" and config["times"] == ["18:00", "19:00", "20:00"]
+
+
+def test_switching_to_an_industry_without_bookings_clears_the_config():
+    """換成電商卻留著餐廳的預約設定,電商的客服就會開始幫人「訂位」。"""
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    run_seed("ecommerce", slug="bistro")
+    with session_scope() as db:
+        assert db.get(Company, cid).booking_config is None
