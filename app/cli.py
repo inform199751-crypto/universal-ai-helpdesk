@@ -293,6 +293,52 @@ def run_release(slug: str) -> int:
         return len(users)
 
 
+def run_bookings(slug: str, *, on: str | None = None) -> list[dict]:
+    """列出某家店的預約:預設今天(台灣)以後;有 on 就只列那一天。只列已成立的,依日期、時間排序。"""
+    from datetime import date, datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.booking import WEEKDAYS, today_taipei
+    from app.database import session_scope
+    from app.models import Booking, Company
+
+    try:
+        day = date.fromisoformat(on) if on else None
+    except ValueError:
+        raise SystemExit(f"日期格式要是 YYYY-MM-DD:「{on}」") from None
+
+    with session_scope() as db:
+        company = db.scalar(select(Company).where(Company.slug == slug))
+        if company is None:
+            raise SystemExit(
+                f"找不到 slug「{slug}」。用 `python -m app.cli list` 看有哪些行業。")
+        q = select(Booking).where(Booking.company_id == company.id,
+                                  Booking.status == "confirmed")
+        if day is not None:
+            q = q.where(Booking.booking_date == day)
+        else:
+            q = q.where(Booking.booking_date >= today_taipei(datetime.now(timezone.utc)))
+        rows = db.scalars(q.order_by(Booking.booking_date, Booking.booking_time,
+                                     Booking.id)).all()
+        return [{"date": r.booking_date.isoformat(),
+                 "weekday": WEEKDAYS[r.booking_date.weekday()],
+                 "time": r.booking_time, "party_size": r.party_size, "name": r.name,
+                 "phone": r.phone, "extra": dict(r.extra or {})} for r in rows]
+
+
+def _report_bookings(rows: list[dict]) -> None:
+    if not rows:
+        print("沒有預約")
+        return
+    print(f"共 {len(rows)} 筆")
+    for r in rows:
+        d = r["date"][5:].replace("-", "/")
+        extra = "  ".join(str(v) for v in r["extra"].values())
+        print(f"  {d}({r['weekday']}) {r['time']}  {r['party_size']} 位  "
+              f"{r['name']}  {r['phone']}" + (f"  {extra}" if extra else ""))
+
+
 def _ensure_utf8_stdout() -> None:
     """重新導向過的 stdout(存成記錄檔、被別的程式接手 pipe、排進 CI 步驟)
     在繁體中文 Windows 上預設編碼是系統的 ANSI code page(cp950)。只有
@@ -348,6 +394,10 @@ def main(argv=None) -> int:
     r = sub.add_parser("release")
     r.add_argument("--slug", required=True)
 
+    b = sub.add_parser("bookings")
+    b.add_argument("--slug", required=True)
+    b.add_argument("--date", help="只列這一天(YYYY-MM-DD);不給就列今天以後的全部")
+
     args = parser.parse_args(argv)
     if args.cmd == "list":
         _report_list(run_list())
@@ -360,6 +410,9 @@ def main(argv=None) -> int:
     if args.cmd == "release":
         n = run_release(args.slug)
         print(f"✓ 已把 {n} 位客人交還給 AI")
+        return 0
+    if args.cmd == "bookings":
+        _report_bookings(run_bookings(args.slug, on=args.date))
         return 0
 
     run_seed(args.industry, slug=args.slug,
