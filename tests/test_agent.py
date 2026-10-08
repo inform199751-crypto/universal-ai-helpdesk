@@ -535,3 +535,48 @@ def test_a_deadline_overrides_the_default_budget():
                  client=_http(_by_model({PREFERRED: _trickling(), FALLBACK: _trickling()})),
                  deadline=_time.monotonic() + 0.5)
     assert _time.monotonic() - started < TRICKLE_SECONDS
+
+
+def test_each_request_timeout_is_clamped_to_the_remaining_time():
+    """NVIDIA 的 API 不串流:生成完才一次送出,中間一個位元組都沒有 —— 只在收到資料時
+    看時鐘的話永遠看不到。請求本身的 timeout 要縮到剩下的時間,不然一步從第 40 秒開始,
+    可以拖到第 85 秒,越過 LINE reply token 的效期。"""
+    seen = []
+
+    def handler(request):
+        seen.append(request.extensions["timeout"])
+        return _ok()
+
+    client = httpx.Client(transport=httpx.MockTransport(handler),
+                          timeout=_S.llm_timeout_seconds)
+    complete([{"role": "user", "content": "嗨"}], client=client,
+             deadline=_time.monotonic() + 2.0)
+    assert seen and all(0 < v <= 2.0 for v in seen[0].values()), seen
+
+
+def test_a_silent_upstream_is_given_up_at_the_deadline(monkeypatch):
+    """final review 用真的 socket 驗出來的形狀:連得上,但一個位元組都不回(NVIDIA 生成期間
+    就是這樣)。沒有縮 timeout 的話,要等滿 llm_timeout_seconds 才放棄。"""
+    import socket
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)   # 只 listen 不 accept:連線在系統的佇列裡完成,請求送得出去但永遠沒有回應
+
+    class FakeSettings:
+        openrouter_model = PREFERRED
+        openrouter_fallback_model = FALLBACK
+        openrouter_base_url = f"http://127.0.0.1:{srv.getsockname()[1]}"
+        openrouter_api_key = "k"
+        llm_max_tokens = _S.llm_max_tokens
+        llm_timeout_seconds = 5.0
+        llm_total_budget_seconds = 25.0
+
+    monkeypatch.setattr("app.agent.llm.get_settings", lambda: FakeSettings())
+    started = _time.monotonic()
+    try:
+        with pytest.raises(LLMError):
+            complete([{"role": "user", "content": "嗨"}], deadline=started + 1.0)
+    finally:
+        srv.close()
+    assert _time.monotonic() - started < 3.0

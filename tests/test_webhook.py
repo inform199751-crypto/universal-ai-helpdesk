@@ -1067,6 +1067,33 @@ def test_when_the_model_fails_after_booking_only_the_confirmation_is_sent(
     assert _replies(line_out) == [_expected_confirmation(day, "19:00", 2)]
 
 
+def test_the_program_confirmation_keeps_the_booked_name_as_given(bookable, line_out, monkeypatch):
+    """確認句是程式組的、本來就是繁體,不該再過簡繁轉換 —— OpenCC 會把常見姓氏改掉
+    (余→餘、于→於),客人會看到自己的名字被寫錯。"""
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day, name="余淑芬"), id="c1")),
+             LLMError("上游掛了"))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4).replace("王小明", "余淑芬")]
+
+
+def test_the_models_text_is_converted_but_the_booked_name_is_kept(bookable, line_out, monkeypatch):
+    """模型自己的字照樣轉繁體,但訂位人的名字換回客人給的寫法。
+    (OpenCC s2t 把「为」轉成「爲」,不是「為」 —— 這裡斷言的是它實際的輸出。)"""
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day, name="余淑芬"), id="c1")),
+             LLMResult("已为您订好,余淑芬", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == ["已爲您訂好,余淑芬"]
+    with session_scope() as db:   # 對話紀錄要跟客人實際看到的一致
+        assert db.scalars(select(ChatHistory.content).where(
+            ChatHistory.role == ChatRole.ASSISTANT)).all() == ["已爲您訂好,余淑芬"]
+
+
 def test_a_handoff_after_booking_still_tells_the_customer_it_is_booked(
         bookable, rules, line_out, monkeypatch):
     day = bookable
@@ -1123,9 +1150,12 @@ def test_the_typing_animation_lasts_as_long_as_the_agent_budget(line_out, monkey
     assert seconds == [45]
 
 
-def test_a_duplicate_booking_is_not_announced_to_the_staff_again(bookable, line_out, monkeypatch):
-    """客人改人數、模型又呼叫一次 create_booking:同一時段已經有這位客人的預約,
-    工具回 duplicate。店員早就收過那一筆的「新訂位」,不該再收一次(spec §八)。"""
+def test_asking_to_change_a_booking_changes_nothing_and_is_not_announced_again(
+        bookable, line_out, monkeypatch):
+    """客人想改人數、模型又呼叫一次 create_booking:同一時段已經有這位客人的預約,工具回
+    duplicate 並註明沒有更改 —— 改、取消要客人自己聯繫店家(spec §一),模型照實回答。
+    資料不動;店員早就收過那一筆的「新訂位」,不該再收一次(spec §八)。"""
+    honest = "您這個時段已經有訂位了,要改人數請直接來電 02-2345-6789"
     day = bookable
     with session_scope() as db:
         acme = db.scalar(select(Company).where(Company.slug == "acme"))
@@ -1136,15 +1166,17 @@ def test_a_duplicate_booking_is_not_announced_to_the_staff_again(bookable, line_
         db.add(Booking(company_id=acme.id, user_id=user.id, booking_date=date.fromisoformat(day),
                        booking_time="20:00", party_size=2, name="王小明", phone="0912345678",
                        status="confirmed"))
-    _llm_seq(monkeypatch,
-             _tool_calls(ToolCall("create_booking", _args(day, party_size=4), id="c1")),
-             LLMResult("已幫您確認", token_count=1, latency_ms=1))
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("create_booking", _args(day, party_size=4), id="c1")),
+                     LLMResult(honest, token_count=1, latency_ms=1))
     with TestClient(app) as client:
         _post(client, _body(text="人數改成 4 位"))
+    assert "沒有更改" in json.loads(calls[1]["messages"][-1]["content"])["note"]
     assert _pushes(line_out) == []
-    assert _replies(line_out) == ["已幫您確認"]
+    assert _replies(line_out) == [honest]
     with session_scope() as db:
-        assert len(db.scalars(select(Booking)).all()) == 1
+        (row,) = db.scalars(select(Booking)).all()
+        assert row.party_size == 2
 
 
 def test_a_new_booking_followed_by_a_duplicate_is_announced_once(bookable, line_out, monkeypatch):
@@ -1191,4 +1223,6 @@ def test_the_customer_is_answered_before_the_booking_push_even_when_handing_off(
     with TestClient(app) as client:
         _post(client, _body(text="訂位,另外我小孩對花生很敏感"))
     assert line_out[0][0] == "reply"
+    # 三條轉真人的路都要先告訴客人訂好了 —— 安全網那兩條少傳 prefix 也要抓得到
+    assert line_out[0][1].startswith(_expected_confirmation(day, "20:00", 4))
     assert any("【新訂位】" in p[2] for p in _pushes(line_out))

@@ -68,6 +68,11 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
         except LLMError as exc:
             logger.warning("agent 第 %d 步模型失敗:%s", step, exc)
             return finish(None, step)
+        except Exception:  # noqa: BLE001
+            # 上游回了格式怪異的東西時,解析可能丟出 LLMError 以外的例外。讓它往外飛的話,
+            # 前幾步已經成立的預約會被最外層吞掉,客人只收到通用 fallback、不知道訂好了。
+            logger.exception("agent 第 %d 步模型呼叫發生非預期錯誤", step)
+            return finish(None, step)
         if result.token_count is not None:
             tokens = (tokens or 0) + result.token_count
         latency += result.latency_ms

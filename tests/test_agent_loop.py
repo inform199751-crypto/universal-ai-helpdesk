@@ -113,6 +113,15 @@ def test_a_failure_after_booking_still_reports_the_booking():
     assert (r.text, r.booking, r.steps) == (None, BOOKED, 2)
 
 
+def test_an_unexpected_error_from_the_model_after_booking_still_reports_the_booking():
+    """上游回了格式怪異的東西,解析時丟的不是 LLMError(例如 tool_calls 裡夾著字串):
+    已經成立的預約不能因此掉成通用 fallback —— 結果要帶 booking、沒有文字,
+    webhook 才會補確認句。"""
+    s = Script(_tools(_call("create_booking")), RuntimeError("回應格式壞了"))
+    r = _run(s, lambda n, a: {"ok": True, "booking": BOOKED})
+    assert (r.text, r.booking, r.steps) == (None, BOOKED, 2)
+
+
 def test_a_tool_that_raises_becomes_an_error_result_for_the_model():
     def boom(name, args):
         raise RuntimeError("db down")

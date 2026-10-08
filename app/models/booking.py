@@ -20,7 +20,8 @@ class Booking(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     company_id: Mapped[str] = mapped_column(
         ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
-    # 哪位 LINE 客人訂的(防重複:同一人同一時段只會有一筆)
+    # 哪位 LINE 客人訂的。同一人同一時段只會有一筆,但那是程式層的檢查(app/booking.py
+    # 在公司列的鎖裡先查再寫),資料表沒有 unique 限制 —— 手動寫 SQL 不受保護。
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     booking_date: Mapped[date] = mapped_column(Date, nullable=False)

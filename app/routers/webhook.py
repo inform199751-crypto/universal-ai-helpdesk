@@ -336,18 +336,27 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 notify_new_bookings()
                 return
             # 第二道:沒照念 script,而是自己改寫成「我將為您轉接」(2026-09-29 真機)。
+            # 排在念 script 那道之後 —— 店家的 script 本身也含「請店長」這類字,
+            # 照念時要保留它自己的類別與原句。
             promised = decision_from_promised_transfer(agent.text)
             if promised is not None:
                 _handoff(decision=promised, prefix=confirmation, **handoff_args)
                 notify_new_bookings()
                 return
+            # 簡繁兜底只套在模型自己寫的字,而且在寫入資料庫之前 —— 對話紀錄要跟客人
+            # 實際看到的一致。prompt 已經規定繁體,但那只降低漂移消不掉(真機上出現過
+            # 「停车位」)。確認句與店家的 fallback 本來就是繁體,不再轉。
+            model_text = ensure_traditional(agent.text)
+            if agent.booking:
+                # OpenCC 會改到常見姓氏(余→餘、于→於):訂位人的名字換回客人給的寫法
+                name = agent.booking["name"]
+                converted = ensure_traditional(name)
+                if converted != name:
+                    model_text = model_text.replace(converted, name)
             # 只有模型真的回了答案才加:fallback 前面接「專員不在線上」沒有意義
-            answer = expired_prefix + agent.text
+            answer = expired_prefix + model_text
             tokens, latency = agent.token_count, agent.latency_ms
 
-        # 簡繁兜底要在寫入資料庫之前 —— 對話紀錄要跟客人實際看到的一致。
-        # prompt 已經規定繁體,但那只降低漂移消不掉(真機上出現過「停车位」)。
-        answer = ensure_traditional(answer)
         answer = truncate_for_line(answer, settings.line_max_text_length)
 
         with session_scope() as db:

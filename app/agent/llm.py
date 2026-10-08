@@ -132,11 +132,14 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
     try:
         # 用串流邊讀邊看時鐘,不用 http.post 一次讀完:OpenRouter 生成期間
         # 會持續送空白維持連線,http.post 會一直等下去,timeout 也不會觸發。
+        # 請求本身的 timeout 也縮到剩下的時間:NVIDIA 不串流,生成完之前一個位元組
+        # 都不送,上面那個邊讀邊看的檢查根本沒機會執行。
         with http.stream(
             "POST",
             f"{endpoint.base_url}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {endpoint.api_key}"},
+            timeout=httpx.Timeout(max(0.5, deadline - time.monotonic())),
         ) as r:
             chunks = []
             for chunk in r.iter_bytes():

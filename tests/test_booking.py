@@ -4,6 +4,8 @@
 「現在」固定在台灣 2026-10-06(二)12:00 —— 週一公休、14 天範圍的邊界都看得到。
 """
 
+import threading
+import time
 from datetime import date, datetime, timezone
 
 import pytest
@@ -110,12 +112,15 @@ def test_the_prompt_gives_today_and_a_date_table_with_closed_days():
     assert "2026-10-20(二)" in p and "2026-10-21" not in p   # 今天起算 14 天
     assert "不要反問" in p
     assert "最多 6 位" in p and CONTACT in p
+    # 改、取消不在範圍內(spec §一):沒講的話,模型會把重複呼叫的 ok 當成「已幫您改好」
+    assert f"已成立的訂位不能在這裡修改或取消;客人要改人數、時間或取消,請他直接聯繫 {CONTACT}。" in p
 
 
 def test_the_clinic_prompt_asks_for_the_service_not_the_party_size():
     p = booking.booking_prompt(CLINIC, today=date(2026, 10, 6), contact=CONTACT)
     assert "看診項目" in p
     assert "人數" not in p and "最多" not in p
+    assert f"已成立的預約不能在這裡修改或取消;客人要改時間或取消,請他直接聯繫 {CONTACT}。" in p
 
 
 # --- 查空位 -------------------------------------------------------------------
@@ -227,6 +232,42 @@ def test_booking_the_same_slot_twice_returns_the_first_booking(ids):
     assert again["ok"] is True and again["duplicate"] is True
     assert again["booking"]["party_size"] == 4
     assert len(_rows()) == 1
+    # 客人可能是想改人數:結果要明講沒有改,模型才不會回「已幫您改好」
+    assert "沒有更改" in again["note"] and CONTACT in again["note"]
+
+
+@pytest.mark.skipif(engine.dialect.name == "sqlite",
+                    reason="要驗的是 PostgreSQL 的列鎖;SQLite 只用在開發與測試,不保證這件事")
+def test_two_simultaneous_calls_from_the_same_customer_book_once(ids, monkeypatch):
+    """同一位客人的兩個請求同時到(LINE 重送、連按兩次):第二個要等第一個 commit 完才做
+    防重複檢查。防重複排在鎖之前的話,兩個都看不到對方,兩筆都成立。
+
+    數名額那一步放慢一點,讓先拿到鎖的那個抓久一點 —— 不靠排程運氣,每次都看得到競態。"""
+    real_taken = booking._taken
+
+    def slow_taken(*args, **kwargs):
+        time.sleep(0.3)
+        return real_taken(*args, **kwargs)
+
+    monkeypatch.setattr(booking, "_taken", slow_taken)
+    barrier = threading.Barrier(2)
+    results, errors = [], []
+
+    def book():
+        try:
+            barrier.wait(timeout=10)
+            results.append(_create(ids))   # 每個執行緒自己的 session_scope()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=book) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert errors == []
+    assert len(_rows()) == 1
+    assert sorted(bool(r.get("duplicate")) for r in results) == [False, True]
 
 
 def test_the_clinic_stores_the_service_and_ignores_any_party_size(ids):

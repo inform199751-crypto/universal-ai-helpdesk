@@ -112,6 +112,11 @@ def booking_prompt(config: dict, *, today: date, contact: str | None) -> str:
     ]
     if _asks_party(config):
         lines.append(f"- 每筆最多 {config['max_party']} 位,超過請客人直接聯繫 {contact or '店家'}。")
+    # 改、取消不在這次範圍內(spec §一)。不講的話,客人說「改成 4 位」時模型會再呼叫一次
+    # create_booking,拿到重複的 ok 就回「已幫您改好」—— 資料其實沒動。
+    changes = "、".join((["人數"] if _asks_party(config) else []) + ["時間"])
+    lines.append(f"- 已成立的{label}不能在這裡修改或取消;客人要改{changes}或取消,"
+                 f"請他直接聯繫 {contact or '店家'}。")
     lines.append(f"- {CREATE_TOOL} 成功後,用一句話確認內容;失敗時照工具回傳的原因向客人說明。")
     return "\n".join(lines)
 
@@ -217,17 +222,23 @@ def create_booking(db: Session, *, company_id: str, user_pk: str, config: dict,
             return _fail(f"{field['label']}只能選:{'、'.join(field['options'])}")
         extra[field["key"]] = value
 
+    # 先鎖住這家公司的列,再做防重複與名額 —— 同一位客人同時送兩次、或兩個人搶最後一個名額,
+    # 第二個請求都要等第一個 commit 完才看得到結果(PostgreSQL)。FOR NO KEY UPDATE 就夠了,
+    # 不會擋住其他資料表對 companies 的外鍵寫入。SQLite 只用在開發與測試,不保證這件事。
+    db.execute(select(Company.id).where(Company.id == company_id).with_for_update(key_share=True))
+
     # 防重複:模型偶爾會重複呼叫 —— 同一位客人同一時段只會有一筆
     existing = db.scalar(select(Booking).where(
         Booking.company_id == company_id, Booking.user_id == user_pk,
         Booking.booking_date == d, Booking.booking_time == slot,
         Booking.status == CONFIRMED))
     if existing is not None:
-        return {"ok": True, "duplicate": True, "booking": _public(existing)}
+        # 客人可能是想改人數:明講沒有改,模型才不會回「已幫您改好」
+        return {"ok": True, "duplicate": True, "booking": _public(existing),
+                "note": f"這位客人這個時段已經有{label},內容沒有更改;"
+                        f"要修改或取消請客人直接聯繫 {contact or '店家'}"}
 
-    # 名額:先鎖住這家公司的列再數 —— 兩個人同時搶最後一個名額時,第二個人要等
-    # 第一個人 commit 完才數得到,看到的是已滿。SQLite 本來就一次只允許一個寫入。
-    db.execute(select(Company.id).where(Company.id == company_id).with_for_update())
+    # 名額:在上面那個鎖裡數 —— 搶最後一個名額的第二個人看到的是已滿
     if _taken(db, company_id, d, slot) >= config["capacity"]:
         return _fail(f"{_md(d)} {slot} 剛好滿了,請換個時段")
     row = Booking(company_id=company_id, user_id=user_pk, booking_date=d,

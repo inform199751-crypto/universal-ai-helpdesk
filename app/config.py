@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # 速率限制(設計見 docs/superpowers/specs/2026-10-05-rate-limit-design.md)。
     # 0 = 關閉那一條。全站每分鐘 30 留 10 的餘裕在 NVIDIA 免費層的每分鐘約 40 次以下 ——
     # 超過的話 NVIDIA 回 429,全部退到 OpenRouter,一天 50 次幾分鐘就燒光。
+    # 這個估算假設一則訊息呼叫一次模型。有了 agent loop,預約的訊息最多要 4 次,尖峰時
+    # 會超過 NVIDIA 的每分鐘約 40 次 —— 2026-10-06 的預約 spec(決策 9)接受這點:
+    # 多數訊息仍是 1 次,429 時退到 OpenRouter。
     rate_limit_user_per_minute: int = Field(5, ge=0)
     rate_limit_user_per_day: int = Field(20, ge=0)
     rate_limit_global_per_minute: int = Field(30, ge=0)
