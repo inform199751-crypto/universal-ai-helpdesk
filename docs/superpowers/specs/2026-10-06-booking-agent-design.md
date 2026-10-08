@@ -55,7 +55,7 @@
 | 情境 | 結果 | 處置 |
 |---|---|---|
 | 客人只說「我想訂位」(開放式問題),開著思考 | 5 次裡 3 次把 `max_tokens`(1200)全拿去思考、`finish_reason=length`、content 是空的(11~37 秒)→ `LLMError("拿不到內容")` → 客人收到 fallback;沒有預約說明的線上版 5/5 約 1.5 秒 | 送 `chat_template_kwargs.enable_thinking=false` 後 5/5 在 0.9~3 秒內正常回答 → `nvidia_enable_thinking = False` |
-| 最後一步,對話裡已有 assistant `tool_calls` 與 `role: tool` | 不帶 `tools`:3/3 照樣回 `create_booking`;帶 `tools` + `tool_choice: none`:3/3 一樣;關思考:3/3 一樣 | loop 最後一步仍不給工具,但回來的工具呼叫照樣執行、不再問模型 |
+| 最後一步,對話裡已有 assistant `tool_calls` 與 `role: tool` | 不帶 `tools`:3/3 照樣回 `create_booking`;帶 `tools` + `tool_choice: none`:3/3 一樣;關思考:3/3 一樣 | loop 最後一步仍不給工具,但回來的工具呼叫照樣執行、不再問模型;同時回的文字丟掉 |
 
 ## 三、整體流程
 
@@ -214,9 +214,10 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 
 **最後一步**:仍送 `tools=None`(有些上游因此改回文字),但回來的工具呼叫不丟掉 —— 有 `transfer_to_human`
 照樣轉真人優先、其他工具照樣依序執行(記進 `tools_used`、成立的 `booking` 記下來、例外變 `{ok: false, …}`),
-執行完直接回傳(`text` 是模型同時回的文字,通常是 `None`),不把結果放回對話、不再呼叫模型。2026-10-08 實測
+執行完直接回傳 `text=None`,不把結果放回對話、不再呼叫模型。模型同時回的文字一律丟掉 —— 那是在工具結果出來之前
+寫的:成立時可能只是「好的,幫您處理」(客人看不到確認句),被拒絕時甚至可能寫著「已為您訂位」。2026-10-08 實測
 NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法下都照樣回 `create_booking`(各 3/3)。
-回覆由 webhook 補:有成立的 `booking` 且沒有文字 → 確認句;都沒有 → fallback。
+回覆由 webhook 補:有成立的 `booking` → 程式組的確認句;沒有 → fallback。
 
 每則訊息寫一行 info log:`agent 步數=3 工具=check_availability,create_booking`。
 
@@ -276,11 +277,11 @@ NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法
   電話格式(含 `-`、空白、市話、錯誤長度)、選項外的值、名額滿、防重複回傳既有那筆、`max_party: 1` 不收人數、
   工具定義由設定產生(餐廳有 `party_size`、診所有 `service` 選項)、預約說明的日期對照表與公休標記(固定「今天」)
 - **`test_agent_loop.py`**(假的模型回應序列):只回文字;查空位 → 建立 → 文字;轉真人優先且不執行其他工具;
-  步數用完時最後一步沒有帶工具、但回來的工具呼叫照樣執行且不再問模型(轉真人優先);**建立後超時 → 結果帶 `booking` 且沒有文字**;工具錯誤與例外回給模型;
+  步數用完時最後一步沒有帶工具、但回來的工具呼叫照樣執行且不再問模型(轉真人優先;同時回的文字丟掉,成立與被拒絕各一條);**建立後超時 → 結果帶 `booking` 且沒有文字**;工具錯誤與例外回給模型;
   不存在的工具;每一步拿剩下的時間
 - **`test_agent.py`**:多個 tool_calls 都解析出來(含 id);`deadline` 取代預設上限;送 NVIDIA 的 body 預設帶
   `enable_thinking: false`(可由設定打開)、退回 OpenRouter 時不帶
-- **`test_webhook.py`**:整段訂位寫進 `bookings`;對話紀錄只有 user + 最後文字;超時時送出程式組的確認句;建立後又轉真人時,轉真人的話前面接上確認句;
+- **`test_webhook.py`**:整段訂位寫進 `bookings`;最後一步才回 `create_booking` 時客人只收到確認句(被拒絕則收到 fallback);對話紀錄只有 user + 最後文字;超時時送出程式組的確認句;建立後又轉真人時,轉真人的話前面接上確認句;
   有 `staff_notify_to` 時推播;限流照樣在 loop 之前擋;沒有 `booking_config` 時工具清單沒有預約工具
 - **`test_validate.py`**:規則 11 的每一種 ERROR;規則 12 的 BLOCK;沒有 `booking.yaml` 不報錯
 - **`test_cli.py`**:seed 寫入 / 清空 `booking_config`;`bookings` 指令的篩選與排序
@@ -305,6 +306,9 @@ NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法
 - 只能新增,不能取消或修改(請客人來電)
 - 名額以組計,不處理桌位
 - 對話紀錄不存工具過程:下一則訊息時模型看不到上一則的查詢結果(建立時會再查一次,所以不會超訂)
-- 最後一步才回工具呼叫時,結果不會再交給模型解釋:成立 → 客人只收到程式組的確認句(模型沒有同時回文字時);被拒絕(名額被搶、格式不對)
-  → 收到 fallback,要再問一次
+- 最後一步才回工具呼叫時,結果不會再交給模型解釋:成立 → 客人只收到程式組的確認句;被拒絕(名額被搶、格式不對)
+  → 收到 fallback,要再問一次。模型同時回的文字一律丟掉,所以客人不會讀到工具結果出來之前寫的話
+- `nvidia_enable_thinking` 只作用在 NVIDIA 那個上游。只走 OpenRouter 的部署(沒設 NVIDIA key)照樣會思考:
+  `reasoning: {"exclude": true}` 只是把思考藏起來、不是關掉,所以開放式問題想到用完 `max_tokens`、content 是空的
+  這個問題在那裡仍可能發生
 - 多步驟讓每則訊息最多呼叫模型 4 次;全站每分鐘 30 則在最壞情況下會超過 NVIDIA 的每分鐘約 40 次
