@@ -33,7 +33,7 @@
 | 2 | 成立方式 | 有名額就直接成立 | 客人當下得到結果才是 bot 預約的價值;「店家確認」需要後台介面,範圍約兩倍,且店員端無法實測(只有一個 LINE 帳號) |
 | 3 | 名額 | 以「組」計,每筆另有人數上限 | 餐廳與診所都適用;以座位計會牽涉桌位排列,與 agent 無關 |
 | 4 | loop 實作 | 自己寫 tool-calling 迴圈 | 面試要講得出迴圈怎麼運作;沿用既有的時間上限、備援、savepoint。只讓模型抽欄位(不跑迴圈)就不是 agent;框架會把迴圈藏起來,也跟「證明會做系統」的初衷相反 |
-| 5 | 步數上限 | 4 步,第 4 步不給工具 | 實測最多用 3 步;最後一步拿掉工具,模型只能用文字回答,不會繞圈到什麼都沒回 |
+| 5 | 步數上限 | 4 步,最後一步不給工具;模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補 | 實測最多用 3 步;最後一步拿掉工具,不會繞圈到什麼都沒回。2026-10-08 實測 NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法下都照樣回 `create_booking`(各 3/3)—— 丟掉的話資料齊全的訂位不會成立,所以照樣執行,結果不再塞回對話 |
 | 6 | 時間上限 | 整個 loop 45 秒(原本每則 25 秒) | 實測每步 1–13 秒,3 步最長超過 22 秒;LINE reply token 約一分鐘有效,留 15 秒給送出與備援 |
 | 7 | 日期 | **程式提供未來 N 天的日期對照表**,並規定「週五」= 從今天起算最近的那一天(今天就是週五則指今天) | 實測:沒有對照表時模型把 10/10 當週五;有對照表後全對。模型反覆追問「本週五還是下週五」,是 prompt 本身寫了歧義 |
 | 8 | 把關 | 所有檢查在程式裡(`app/booking.py`),模型只負責對話 | 模型是會出錯的那一方;不通過就回傳中文錯誤,讓模型向客人解釋 |
@@ -50,6 +50,13 @@
 | 分四句慢慢講 | 2/5 完成;另 3 次卡在反覆追問「本週五還是下週五」(prompt 歧義 + 腳本客人不回答) |
 | 日期換算 | 沒有對照表時錯一次;有對照表後全對 |
 
+### 2026-10-08 真模型驗收(NVIDIA `nemotron-3-super-120b-a12b`,正式的預約說明與工具)
+
+| 情境 | 結果 | 處置 |
+|---|---|---|
+| 客人只說「我想訂位」(開放式問題),開著思考 | 5 次裡 3 次把 `max_tokens`(1200)全拿去思考、`finish_reason=length`、content 是空的(11~37 秒)→ `LLMError("拿不到內容")` → 客人收到 fallback;沒有預約說明的線上版 5/5 約 1.5 秒 | 送 `chat_template_kwargs.enable_thinking=false` 後 5/5 在 0.9~3 秒內正常回答 → `nvidia_enable_thinking = False` |
+| 最後一步,對話裡已有 assistant `tool_calls` 與 `role: tool` | 不帶 `tools`:3/3 照樣回 `create_booking`;帶 `tools` + `tool_choice: none`:3/3 一樣;關思考:3/3 一樣 | loop 最後一步仍不給工具,但回來的工具呼叫照樣執行、不再問模型 |
+
 ## 三、整體流程
 
 ```
@@ -59,7 +66,10 @@
          ├ 文字           → 結束
          ├ transfer_to_human → 結束,走既有轉真人流程(優先;同一回應的其他工具不執行)
          └ 預約工具        → 執行 → 結果放回對話 → 下一步
-       第 4 步:不帶工具,強制文字回答
+       第 4 步(最後一步):不給工具
+         ├ 文字           → 結束
+         ├ transfer_to_human → 結束,走既有轉真人流程(優先)
+         └ 仍回預約工具    → 照樣執行,不再問模型;回覆由程式補(成立 → 確認句,否則 fallback)
   → (既有)安全網、簡繁、寫入、送出、標已讀
 ```
 
@@ -129,8 +139,9 @@ fields:
 
 | 欄位 | 預設 | 說明 |
 |---|---|---|
-| `agent_max_steps` | 4 | 最後一步不帶工具 |
+| `agent_max_steps` | 4 | 最後一步不給工具;模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補(2026-10-08 實測 NVIDIA 不帶工具照樣回工具呼叫) |
 | `agent_total_budget_seconds` | 45 | 整個 loop 合計;每一步拿剩下的時間 |
+| `nvidia_enable_thinking` | False | 送給 NVIDIA 的 `chat_template_kwargs.enable_thinking`,預設關。2026-10-08 實測:預約說明很長,開著思考時開放式問題 5 次裡 3 次把 `max_tokens` 用光、content 是空的(11~37 秒);關掉後 5/5 在 0.9~3 秒內答出。只送 NVIDIA,OpenRouter 不帶 |
 
 「正在輸入」動畫的秒數改用 `agent_total_budget_seconds`(LINE 接受 5–60、5 的倍數)。
 既有的 `llm_total_budget_seconds`(25)保留給單次 `complete()` 沒有傳入截止時間時使用。
@@ -194,12 +205,18 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 每一步:
 
 1. 剩餘時間 = 截止時間 − 現在;不足 1 秒就停止
-2. `complete(messages, tools=… , deadline=…)`;第 `agent_max_steps` 步不帶工具。呼叫失敗(`LLMError`,或上游回應
+2. `complete(messages, tools=… , deadline=…)`;第 `agent_max_steps` 步(最後一步)不給工具(`tools=None`,見下)。呼叫失敗(`LLMError`,或上游回應
    格式怪異時的其他例外)→ 停止並回傳 `text=None`,本次已成立的 `booking` 照樣帶著
 3. 有 `transfer_to_human` → 立刻回傳 `handoff`,不執行同一回應裡的其他工具
 4. 其他工具 → 依序執行;把 assistant 的 `tool_calls` 與每個 `{"role": "tool", "tool_call_id", "content"}`
    附加到 messages;工具丟例外時以 `{ok: false, error: "系統暫時無法處理"}` 作為結果
 5. 沒有工具呼叫 → 回傳文字
+
+**最後一步**:仍送 `tools=None`(有些上游因此改回文字),但回來的工具呼叫不丟掉 —— 有 `transfer_to_human`
+照樣轉真人優先、其他工具照樣依序執行(記進 `tools_used`、成立的 `booking` 記下來、例外變 `{ok: false, …}`),
+執行完直接回傳(`text` 是模型同時回的文字,通常是 `None`),不把結果放回對話、不再呼叫模型。2026-10-08 實測
+NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法下都照樣回 `create_booking`(各 3/3)。
+回覆由 webhook 補:有成立的 `booking` 且沒有文字 → 確認句;都沒有 → fallback。
 
 每則訊息寫一行 info log:`agent 步數=3 工具=check_availability,create_booking`。
 
@@ -209,6 +226,8 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 - `complete()` 接受選填的 `deadline`(monotonic 秒),有傳就用它取代 `llm_total_budget_seconds`;每個請求本身的
   timeout 也縮到剩下的時間(最少 0.5 秒)—— NVIDIA 不串流,生成完之前一個位元組都不送,只在收到資料時看時鐘擋不住
 - 每一步各自走 NVIDIA → OpenRouter 的備援
+- 各家上游自己的額外參數放在 `_Endpoint.extra_body`,跟網址、key 一起走:NVIDIA 帶
+  `chat_template_kwargs`(`nvidia_enable_thinking`,預設 False),OpenRouter 不帶
 
 ## 七、錯誤處理
 
@@ -218,7 +237,7 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 | 還沒成立就超時、模型全部失敗 | 既有的 fallback 訊息 |
 | 工具回傳錯誤(名額被搶、格式不對) | 當成工具結果還給模型,由模型解釋並建議其他時段 |
 | 工具丟例外 | `{ok: false, error: "系統暫時無法處理"}` 給模型;log 記 exception |
-| 步數用完 | 第 4 步不帶工具,強制文字回答 |
+| 步數用完 | 最後一步不給工具;模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補(成立 → 確認句,沒有 → fallback)。2026-10-08 實測 NVIDIA 不帶工具照樣回工具呼叫 |
 | 模型呼叫不存在的工具 | `{ok: false, error: "沒有這個工具"}` |
 | 推播店員失敗 | 只記 log,不影響預約 |
 
@@ -241,7 +260,7 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 
 ### 修改
 
-- `app/agent/llm.py`(多個 tool_calls、`deadline`)
+- `app/agent/llm.py`(多個 tool_calls、`deadline`、各上游額外參數)
 - `app/routers/webhook.py`(呼叫 loop、超時確認句、推播店員、loading 秒數)
 - `app/knowledge/loader.py`(選填檔案)、`app/knowledge/validate.py`(規則 11、12)
 - `app/cli.py`(seed 寫 `booking_config`;新指令 `bookings`)
@@ -257,9 +276,10 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
   電話格式(含 `-`、空白、市話、錯誤長度)、選項外的值、名額滿、防重複回傳既有那筆、`max_party: 1` 不收人數、
   工具定義由設定產生(餐廳有 `party_size`、診所有 `service` 選項)、預約說明的日期對照表與公休標記(固定「今天」)
 - **`test_agent_loop.py`**(假的模型回應序列):只回文字;查空位 → 建立 → 文字;轉真人優先且不執行其他工具;
-  步數用完時最後一步沒有帶工具;**建立後超時 → 結果帶 `booking` 且沒有文字**;工具錯誤與例外回給模型;
+  步數用完時最後一步沒有帶工具、但回來的工具呼叫照樣執行且不再問模型(轉真人優先);**建立後超時 → 結果帶 `booking` 且沒有文字**;工具錯誤與例外回給模型;
   不存在的工具;每一步拿剩下的時間
-- **`test_agent.py`**:多個 tool_calls 都解析出來(含 id);`deadline` 取代預設上限
+- **`test_agent.py`**:多個 tool_calls 都解析出來(含 id);`deadline` 取代預設上限;送 NVIDIA 的 body 預設帶
+  `enable_thinking: false`(可由設定打開)、退回 OpenRouter 時不帶
 - **`test_webhook.py`**:整段訂位寫進 `bookings`;對話紀錄只有 user + 最後文字;超時時送出程式組的確認句;建立後又轉真人時,轉真人的話前面接上確認句;
   有 `staff_notify_to` 時推播;限流照樣在 loop 之前擋;沒有 `booking_config` 時工具清單沒有預約工具
 - **`test_validate.py`**:規則 11 的每一種 ERROR;規則 12 的 BLOCK;沒有 `booking.yaml` 不報錯
@@ -285,4 +305,6 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 - 只能新增,不能取消或修改(請客人來電)
 - 名額以組計,不處理桌位
 - 對話紀錄不存工具過程:下一則訊息時模型看不到上一則的查詢結果(建立時會再查一次,所以不會超訂)
+- 最後一步才回工具呼叫時,結果不會再交給模型解釋:成立 → 客人只收到程式組的確認句(模型沒有同時回文字時);被拒絕(名額被搶、格式不對)
+  → 收到 fallback,要再問一次
 - 多步驟讓每則訊息最多呼叫模型 4 次;全站每分鐘 30 則在最壞情況下會超過 NVIDIA 的每分鐘約 40 次
