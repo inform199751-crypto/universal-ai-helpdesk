@@ -35,7 +35,7 @@
 | 4 | loop 實作 | 自己寫 tool-calling 迴圈 | 面試要講得出迴圈怎麼運作;沿用既有的時間上限、備援、savepoint。只讓模型抽欄位(不跑迴圈)就不是 agent;框架會把迴圈藏起來,也跟「證明會做系統」的初衷相反 |
 | 5 | 步數上限 | 4 步,第 4 步不給工具 | 實測最多用 3 步;最後一步拿掉工具,模型只能用文字回答,不會繞圈到什麼都沒回 |
 | 6 | 時間上限 | 整個 loop 45 秒(原本每則 25 秒) | 實測每步 1–13 秒,3 步最長超過 22 秒;LINE reply token 約一分鐘有效,留 15 秒給送出與備援 |
-| 7 | 日期 | **程式提供未來 N 天的日期對照表**,並規定「週五」= 今天之後最近的週五 | 實測:沒有對照表時模型把 10/10 當週五;有對照表後全對。模型反覆追問「本週五還是下週五」,是 prompt 本身寫了歧義 |
+| 7 | 日期 | **程式提供未來 N 天的日期對照表**,並規定「週五」= 從今天起算最近的那一天(今天就是週五則指今天) | 實測:沒有對照表時模型把 10/10 當週五;有對照表後全對。模型反覆追問「本週五還是下週五」,是 prompt 本身寫了歧義 |
 | 8 | 把關 | 所有檢查在程式裡(`app/booking.py`),模型只負責對話 | 模型是會出錯的那一方;不通過就回傳中文錯誤,讓模型向客人解釋 |
 | 9 | 全站上限 | 維持每分鐘 30 則 | 多數訊息仍是 FAQ(1 步);平均約 1.2–1.5 次呼叫/則 ≈ 每分鐘 40 次。最壞情況 NVIDIA 429 → OpenRouter 接手,失敗形狀與以前相同。log 記步數,實際偏高再調 |
 | 10 | 存什麼進對話紀錄 | 只存客人訊息與最後的文字回答,不存中間的工具呼叫 | 建立預約時程式會再查一次名額,模型不需要看到上一則的工具結果 |
@@ -157,12 +157,16 @@ fields:
 4. 姓名去掉空白後非空、≤ 50 字
 5. 電話去掉 `-` 與空白後符合 `^0\d{8,9}$`
 6. 每個 `fields` 的值在 `options` 內
-7. **防重複**:同一位客人、同一天、同一時段已有 `confirmed` 預約 → 直接回傳那筆(`ok: true`),不建立第二筆
-8. **名額**:鎖住該公司的 `companies` 列(`SELECT … FOR UPDATE`;SQLite 本來就一次只允許一個寫入)後,
-   數該時段 `confirmed` 筆數,< `capacity` 才寫入
+7. **防重複**:先鎖住該公司的 `companies` 列(見第 8 點),再查同一位客人、同一天、同一時段是否已有 `confirmed`
+   預約 → 有就直接回傳那筆(`{ok: true, duplicate: true, booking, note}`),不建立第二筆。`note` 寫明內容沒有更改、
+   要修改或取消請客人直接聯繫 `contact` —— 客人想改人數或時間時,模型才不會把這個 `ok` 說成「已幫您改好」
+8. **名額**:在同一個鎖裡數該時段 `confirmed` 筆數,< `capacity` 才寫入。鎖(`SELECT … FOR NO KEY UPDATE`)排在
+   防重複之前:同一位客人同時送兩次、或兩個人搶最後一個名額,第二個請求都要等第一個 commit 完才看得到結果
+   (PostgreSQL;SQLite 只用在開發與測試,不保證這件事)。`NO KEY` 就夠了,不會擋住其他資料表對 `companies` 的外鍵寫入
 
 成功回傳 `{ok: true, booking: {date, weekday, time, party_size, name, extra}}`。
-成功時寫一行 info log:`預約成立 客人 …f6e402 10/09 20:00 4 位`(不記電話)。
+新預約成立時(webhook 在回覆客人之後)寫一行 info log:`{label}成立 客人 …f6e402 2026-10-09 20:00 4 位`
+(餐廳是「訂位成立」;不記電話;重複的那筆不記)。
 
 ### 每次請求附加的預約說明
 
@@ -170,8 +174,9 @@ fields:
 
 - 「今天是 2026-10-06(二),時區是台灣」
 - 未來 `advance_days` 天的對照表,公休日標「公休」
-- 規則:「週五」沒有特別說明就是今天之後最近的那個週五,不要反問;建立前一定要先查空位;
-  不可以自己編造空位;缺什麼一次問完;每筆最多 `max_party` 位,超過請客人聯繫 `contact`
+- 規則:「週五」沒有特別說明就是從今天起算最近的那一天(今天就是週五則指今天),不要反問;建立前一定要先查空位;
+  不可以自己編造空位;缺什麼一次問完;每筆最多 `max_party` 位,超過請客人聯繫 `contact`;
+  已成立的預約不能在這裡修改或取消,客人要改人數(`max_party > 1` 時)、時間或取消,請他直接聯繫 `contact`
 
 ## 六、agent loop(`app/agent/loop.py`)
 
@@ -183,12 +188,14 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 
 - `execute(name, arguments) -> dict`:由 webhook 綁好公司、客人、session 後傳入;loop 本身不碰資料庫
 - `AgentResult`:`text`(最後文字,可能為 `None`)、`handoff`(轉真人的 `ToolCall` 或 `None`)、
-  `booking`(本次成立的預約,或 `None`)、`steps`、`token_count`、`latency_ms`
+  `booking`(本次成立的預約,或 `None`)、`steps`、`tools_used`(依序執行過的工具名稱,給 log 用)、
+  `token_count`、`latency_ms`
 
 每一步:
 
 1. 剩餘時間 = 截止時間 − 現在;不足 1 秒就停止
-2. `complete(messages, tools=… , deadline=…)`;第 `agent_max_steps` 步不帶工具
+2. `complete(messages, tools=… , deadline=…)`;第 `agent_max_steps` 步不帶工具。呼叫失敗(`LLMError`,或上游回應
+   格式怪異時的其他例外)→ 停止並回傳 `text=None`,本次已成立的 `booking` 照樣帶著
 3. 有 `transfer_to_human` → 立刻回傳 `handoff`,不執行同一回應裡的其他工具
 4. 其他工具 → 依序執行;把 assistant 的 `tool_calls` 與每個 `{"role": "tool", "tool_call_id", "content"}`
    附加到 messages;工具丟例外時以 `{ok: false, error: "系統暫時無法處理"}` 作為結果
@@ -199,7 +206,8 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 ### `llm.py` 的配合修改
 
 - 回傳**所有** tool_calls(含 `id`),不只第一個;`LLMResult.tool_call` 保留(= 第一個)以免動到既有呼叫端
-- `complete()` 接受選填的 `deadline`(monotonic 秒),有傳就用它取代 `llm_total_budget_seconds`
+- `complete()` 接受選填的 `deadline`(monotonic 秒),有傳就用它取代 `llm_total_budget_seconds`;每個請求本身的
+  timeout 也縮到剩下的時間(最少 0.5 秒)—— NVIDIA 不串流,生成完之前一個位元組都不送,只在收到資料時看時鐘擋不住
 - 每一步各自走 NVIDIA → OpenRouter 的備援
 
 ## 七、錯誤處理
@@ -268,7 +276,7 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 - [ ] 真模型驗收:四個情境各 3 次,建立的預約日期全對、沒有在已滿時段建立
 - [ ] 部署後 `alembic upgrade head` 自動完成,重跑 seed 後 `booking_config` 有值
 - [ ] 手機在 LINE 上完整訂一次位,收到確認;`app.cli bookings` 列得出那筆
-- [ ] log 有 `agent 步數=…` 與 `預約成立 …`
+- [ ] log 有 `agent 步數=…` 與 `{label}成立 …`(餐廳是「訂位成立」)
 
 ## 十二、已知限制
 

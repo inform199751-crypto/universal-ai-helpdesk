@@ -22,7 +22,7 @@ python -m app.cli seed --industry clinic --slug bistro --reset-history
 ```mermaid
 flowchart TD
     Y["industries 資料夾<br/>五份 YAML<br/>company · faq · policies<br/>escalation · glossary"]
-    V{"validate<br/>十條規則"}
+    V{"validate<br/>十二條規則"}
     E["ERROR — 資料壞了<br/>擋下,不寫入資料庫"]
     B["BLOCK — 不擋<br/>列為導入會議議程"]
     J["Jinja2<br/>組成 system_prompt"]
@@ -58,7 +58,7 @@ sequenceDiagram
     alt NVIDIA 正常
         N-->>B: 答案
     else NVIDIA 失敗、逾時或 body 包著 error
-        B->>O: 同一份請求改打備援(openrouter/free),兩家合計 25 秒
+        B->>O: 同一份請求改打備援(openrouter/free),跟 NVIDIA 共用剩下的時間,整則合計 45 秒
         O-->>B: 答案
     end
     B->>L: reply 優先,失敗改 push
@@ -187,12 +187,15 @@ OpenRouter 退成備援)。同一組 10 題(5 題該轉、5 題一般詢問,刻�
 `.env` 可調、設 0 關閉。個人超量第一次回提醒、之後安靜;全站忙碌每則都回忙碌訊息並附上店家聯絡方式。
 關鍵字轉真人不受限流影響。
 
-435 個自動測試全過、1 個跳過,SQLite 與
+443 個自動測試(441 通過、2 跳過),SQLite 與
 PostgreSQL 各跑一輪(CI 兩個 job 都會跑;跳過的兩邊剛好相反:一邊是對方資料庫
 專屬的行為,證明兩邊真的都被跑過,不是同一條測試兩次都被跳過的假訊號)。
 
 預約 agent:餐廳與診所可以在 LINE 上直接預約,模型自己跑「查空位 → 追問 → 建立預約」;
-有名額就直接成立,名額以「組」計。實測(NVIDIA super):一句話講完 2/2、指定已滿的時段 3/3 都沒有硬訂。
+有名額就直接成立,名額以「組」計。動工前先用假工具實測 NVIDIA super(13 段對話):一句話講完 2/2、
+指定已滿的時段 3/3 都沒有硬訂;分四句慢慢講只完成 2/5,另外 3 次卡在反覆追問「本週五還是下週五」——
+那是 prompt 自己寫出的歧義,現在改由程式附上日期對照表、明訂「週五」就是最近的那一天,換算全對。
+正式 prompt 與工具的真模型數字,要等驗收後才有。
 
 真機驗證過的行為:
 

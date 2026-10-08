@@ -30,7 +30,7 @@
 | 主張 | 體現在哪裡 |
 |---|---|
 | **換行業只換資料** | `industries/<行業>/` 五份 YAML。三個示範行業共用同一套程式碼、同一個 LINE 帳號、同一個 webhook 路徑 |
-| **交付的不是機器人,是一份導入檢查清單** | `validate` 的十條規則。BLOCK 不是 bug,是導入會議上要跟客戶確認的問題 |
+| **交付的不是機器人,是一份導入檢查清單** | `validate` 的十二條規則。BLOCK 不是 bug,是導入會議上要跟客戶確認的問題 |
 | **沉默是唯一不被接受的失敗模式** | LLM 掛了、上游滿載、程式爆炸,客人都要收到一句得體的話 |
 
 v1 **明確不做**的三樣(schema 已預留欄位,之後開通不必資料遷移):
@@ -92,7 +92,7 @@ v1 的「轉真人」只是模型照 prompt 念一句「我立刻請店長與您
 
 ```
 industries/<行業>/*.yaml     企業帶入的資料,唯一真相來源
-        │  validate 十條規則 → ERROR 擋下 / BLOCK 列為導入議程
+        │  validate 十二條規則 → ERROR 擋下 / BLOCK 列為導入議程
         │  Jinja2 → system_prompt
         ▼
    companies / users / chat_histories / knowledge_documents
@@ -105,12 +105,12 @@ Enum 用 `native_enum=False`、時間欄位一律存 UTC。SQLite 還要用 conn
 掛上 `PRAGMA foreign_keys=ON` —— 不開的話 `ForeignKey` 宣告形同虛設,
 本機測試全過,上了 PostgreSQL 才發現一堆孤兒資料。
 
-## 五、資料層:五份 YAML 與十條檢查
+## 五、資料層:五份 YAML 與十二條檢查
 
 每個行業就是五份 YAML:`company`(人設、營業時間、**禁語清單**)、
 `faq`、`policies`、`escalation`(什麼時候轉真人)、`glossary`。
 
-`validate` 的十條規則分兩個等級,意思不同:
+`validate` 的十二條規則分兩個等級,意思不同:
 
 | # | 檢查 | 等級 |
 |---|---|---|
@@ -124,10 +124,12 @@ Enum 用 `native_enum=False`、時間欄位一律存 UTC。SQLite 還要用 conn
 | 8 | 營業時間格式可解析 | ERROR |
 | 9 | `escalation` 的 `action` 只能是 `transfer` 或 `apologize` | ERROR |
 | 10 | `action: transfer` 的規則必須有 `category` | ERROR |
+| 11 | booking.yaml 格式(含沒加引號被 YAML 當成整數的時段) | ERROR |
+| 12 | 預約時段落在營業時間外 | BLOCK |
 
 規則 9、10 是 agent 化之後補的:action 打錯字會被默默當成「道歉」處理,
 transfer 少了 category 則工具定義產生不出來 —— 兩種都不會報錯,只會在客人
-需要真人的時候沒有轉。
+需要真人的時候沒有轉。規則 11、12 是預約 agent 帶進來的,檢查選填的 `booking.yaml`。
 
 **ERROR 擋 seed,BLOCK 不擋但列在報告最上方。** 這個分級是整個專題的核心主張:
 交付的不是機器人,是一份導入檢查清單 —— BLOCK 跳出來的每一條,都是要跟客戶
@@ -146,9 +148,9 @@ transfer 少了 category 則工具定義產生不出來 —— 兩種都不會�
 
 ### 自動測試
 
-436 個測試(435 通過、1 跳過),在 Python 3.11 與 3.13 上由 GitHub Actions
+443 個測試(441 通過、2 跳過),在 Python 3.11 與 3.13 上由 GitHub Actions
 每次 push 執行;另有一個專跑 PostgreSQL 的 CI job(`test-postgres`),
-同一套測試在兩種資料庫上都要過。**測試碼 5,069 行,比正式碼的 3,001 行還多。**
+同一套測試在兩種資料庫上都要過。**測試碼 5,210 行,比正式碼的 3,036 行還多。**
 CI 與正式映像都照 `constraints.txt` 安裝同一組鎖定版本(見第七節第 11 點)。
 
 測試不碰網路也不碰檔案系統上的資料庫:`conftest.py` 把 `DATABASE_URL`
@@ -452,7 +454,7 @@ Starlette **1.7**,而本機與 CI 測的是 2.0、1.6 —— 綠燈驗的不是�
 9. **真人接管沒有自己的介面。** 真人在 LINE 官方帳號後台回覆,所以真人說的話
    不會進對話紀錄,我們也看不到真人什麼時候回 —— 「真人每回一句就延長期限」做不到,
    只能從轉的那一刻起算固定 30 分鐘。HUMAN 模式中客人狀況惡化,也不會再通知一次。
-10. **同一位客人在模型思考的 25 秒內連傳兩則**,第一則轉真人之後,第二則的回答
+10. **同一位客人在 agent loop 還在跑的那段時間(最長 45 秒)內連傳兩則**,第一則轉真人之後,第二則的回答
     可能還是會送出去。
 11. **客人的姓名、電話會隨對話送到模型供應商。** NVIDIA 試用條款寫明會收集輸入內容 —— demo 可以,
     接真實店家前要換成不收集資料的方案。
