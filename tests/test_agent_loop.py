@@ -99,12 +99,47 @@ def test_the_last_step_has_no_tools_so_the_model_must_answer():
     assert (r.text, r.steps) == ("請問要哪個時段?", 3)
 
 
-def test_tool_calls_on_the_last_step_are_ignored():
+def test_tool_calls_on_the_last_step_still_run_but_the_model_is_not_asked_again():
+    """2026-10-08 實測:NVIDIA 在最後一步不帶工具、tool_choice none、關思考三種做法下
+    都照樣回 create_booking。資料齊全的訂位不能因此丟掉 —— 照樣執行,但結果不再塞回
+    對話問模型(沒有下一步了),回覆由 webhook 補(有成立預約 → 確認句)。"""
     executed = []
+
+    def execute(name, args):
+        executed.append(name)
+        return {"slots": []} if name == "check_availability" else {"ok": True, "booking": BOOKED}
+
     s = Script(_tools(_call("check_availability")),
                _tools(_call("create_booking", call_id="c2")))
-    r = _run(s, lambda n, a: executed.append(n) or {"slots": []}, max_steps=2)
-    assert executed == ["check_availability"] and r.text is None
+    r = _run(s, execute, max_steps=2)
+    assert executed == ["check_availability", "create_booking"]
+    assert r.booking == BOOKED
+    assert r.text is None
+    assert r.steps == 2
+    assert r.tools_used == ("check_availability", "create_booking")
+    assert len(s.seen) == 2  # 沒有第三次呼叫模型
+
+
+def test_a_handoff_on_the_last_step_still_wins():
+    executed = []
+    s = Script(_tools(_call("check_availability")),
+               _tools(_call("create_booking", {}, "c2"),
+                      _call("transfer_to_human", {"category": "safety"}, "c3")))
+    r = _run(s, lambda n, a: executed.append(n) or {"ok": True}, max_steps=2)
+    assert r.handoff == ToolCall("transfer_to_human", {"category": "safety"})
+    assert executed == ["check_availability"]  # 最後一步的 create_booking 沒執行
+    assert r.text is None and r.booking is None and r.steps == 2
+
+
+def test_text_and_tool_calls_on_the_last_step_keep_the_text():
+    """上游同時回了文字與工具呼叫:工具照樣執行,文字也留著給客人。"""
+    s = Script(_tools(_call("check_availability")),
+               _tools(_call("create_booking", call_id="c2"), text="好的,幫您處理"))
+    r = _run(s, lambda n, a: {"ok": True, "booking": BOOKED} if n == "create_booking"
+             else {"slots": []}, max_steps=2)
+    assert r.text == "好的,幫您處理"
+    assert r.booking == BOOKED
+    assert r.tools_used == ("check_availability", "create_booking")
 
 
 def test_a_failure_after_booking_still_reports_the_booking():

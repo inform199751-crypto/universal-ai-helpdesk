@@ -1,7 +1,9 @@
 """agent loop:模型呼叫工具 → 程式執行 → 結果放回對話 → 模型再決定下一步。
 
 設計見 docs/superpowers/specs/2026-10-06-booking-agent-design.md 第六節。
-- 最多 max_steps 步;最後一步不帶工具,模型只能用文字回答,不會繞圈到什麼都沒回
+- 最多 max_steps 步;最後一步不給工具,不會繞圈到什麼都沒回。但實測 NVIDIA 照樣回工具
+  呼叫(2026-10-08,不帶工具、tool_choice none、關思考各 3/3),所以照樣執行、不再問模型;
+  回覆由 webhook 補(有成立預約 → 程式確認句,沒有 → fallback)
 - 所有步驟共用一個截止時間:每一步拿的是剩下的時間,不是每步各一份
 - 轉真人優先:同一個回應裡有 transfer_to_human,其他工具一律不執行
 - 這裡不碰資料庫、不送訊息:工具怎麼執行由呼叫端給的 execute 決定
@@ -58,6 +60,20 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
         return AgentResult(text=text, handoff=handoff, booking=booking, steps=steps,
                            tools_used=tuple(used), token_count=tokens, latency_ms=latency)
 
+    def run_tool(c: ToolCall) -> dict:
+        """執行一個工具:每一步(含最後一步)都走這裡,例外一律變成 TOOL_FAILURE,
+        成立的預約記下來。"""
+        nonlocal booking
+        used.append(c.name)
+        try:
+            out = execute(c.name, c.arguments)
+        except Exception:  # noqa: BLE001
+            logger.exception("工具 %s 執行失敗", c.name)
+            out = dict(TOOL_FAILURE)
+        if out.get("ok") and out.get("booking"):
+            booking = out["booking"]
+        return out
+
     for step in range(1, max_steps + 1):
         if deadline - time.monotonic() < MIN_STEP_SECONDS:
             logger.warning("agent 時間用完,停在第 %d 步之前", step)
@@ -77,13 +93,22 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
             tokens = (tokens or 0) + result.token_count
         latency += result.latency_ms
 
-        # 最後一步沒給工具;上游若還是回了工具呼叫,也不執行
-        calls = () if last else _calls(result)
+        calls = _calls(result)
         if not calls:
             return finish(result.text or None, step)
         handoff = next((c for c in calls if c.name == HANDOFF_TOOL), None)
         if handoff is not None:
             return finish(None, step, handoff)
+
+        if last:
+            # 最後一步沒給工具,但上游照樣回了工具呼叫(NVIDIA 實測如此):資料齊全的訂位
+            # 不能因此丟掉,所以照樣執行。不把結果塞回對話 —— 沒有下一步了,再問一次模型
+            # 只會又得到工具呼叫。回覆由呼叫端補(有成立預約 → 確認句,沒有 → fallback)。
+            logger.warning("agent 最後一步上游仍回工具呼叫(%s),照樣執行、不再問模型",
+                           ",".join(c.name for c in calls))
+            for c in calls:
+                run_tool(c)
+            return finish(result.text or None, step)
 
         msgs.append({"role": "assistant", "content": result.text or "", "tool_calls": [
             {"id": c.id, "type": "function",
@@ -91,14 +116,7 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
                           "arguments": json.dumps(c.arguments, ensure_ascii=False)}}
             for c in calls]})
         for c in calls:
-            used.append(c.name)
-            try:
-                out = execute(c.name, c.arguments)
-            except Exception:  # noqa: BLE001
-                logger.exception("工具 %s 執行失敗", c.name)
-                out = dict(TOOL_FAILURE)
-            if out.get("ok") and out.get("booking"):
-                booking = out["booking"]
+            out = run_tool(c)
             msgs.append({"role": "tool", "tool_call_id": c.id,
                          "content": json.dumps(out, ensure_ascii=False, default=str)})
 

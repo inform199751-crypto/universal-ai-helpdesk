@@ -59,8 +59,9 @@ class Settings(BaseSettings):
     rate_limit_global_per_minute: int = Field(30, ge=0)
 
     # agent loop(設計見 docs/superpowers/specs/2026-10-06-booking-agent-design.md 第六節)。
-    # 最後一步不帶工具,模型只能用文字回答。45 秒是整個 loop 合計:LINE reply token
-    # 約一分鐘有效,留 15 秒給送出與備援。llm_total_budget_seconds 保留給單次呼叫。
+    # 最後一步不給工具;模型仍回工具呼叫時照樣執行、不再問模型(見 loop.py 檔頭)。
+    # 45 秒是整個 loop 合計:LINE reply token 約一分鐘有效,留 15 秒給送出與備援。
+    # llm_total_budget_seconds 保留給單次呼叫。
     agent_max_steps: int = Field(4, ge=1)
     agent_total_budget_seconds: float = Field(45.0, gt=0)
 
