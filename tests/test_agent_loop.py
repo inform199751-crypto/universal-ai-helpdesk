@@ -131,14 +131,28 @@ def test_a_handoff_on_the_last_step_still_wins():
     assert r.text is None and r.booking is None and r.steps == 2
 
 
-def test_text_and_tool_calls_on_the_last_step_keep_the_text():
-    """上游同時回了文字與工具呼叫:工具照樣執行,文字也留著給客人。"""
+def test_text_written_before_last_step_tool_results_is_dropped():
+    """最後一步的文字是在工具結果出來之前寫的,不是對預約結果的回答 —— 可能只是「好的,
+    幫您處理」。留著的話,webhook 會把它當模型的答案送出,客人看不到確認句。丟掉文字,
+    webhook 才會補程式組的確認句。"""
     s = Script(_tools(_call("check_availability")),
                _tools(_call("create_booking", call_id="c2"), text="好的,幫您處理"))
     r = _run(s, lambda n, a: {"ok": True, "booking": BOOKED} if n == "create_booking"
              else {"slots": []}, max_steps=2)
-    assert r.text == "好的,幫您處理"
+    assert r.text is None
     assert r.booking == BOOKED
+    assert r.tools_used == ("check_availability", "create_booking")
+
+
+def test_a_refused_booking_on_the_last_step_does_not_keep_a_text_that_claims_success():
+    """模型在看到結果之前就寫了「已為您訂位」,而工具其實拒絕了(名額被搶):這句話
+    不能送給客人 —— 沒有 booking、沒有文字,webhook 送的是 fallback。"""
+    s = Script(_tools(_call("check_availability")),
+               _tools(_call("create_booking", call_id="c2"), text="已為您訂位"))
+    r = _run(s, lambda n, a: {"ok": False, "error": "剛好滿了"} if n == "create_booking"
+             else {"slots": []}, max_steps=2)
+    assert r.text is None
+    assert r.booking is None
     assert r.tools_used == ("check_availability", "create_booking")
 
 

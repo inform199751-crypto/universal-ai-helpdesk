@@ -1067,6 +1067,49 @@ def test_when_the_model_fails_after_booking_only_the_confirmation_is_sent(
     assert _replies(line_out) == [_expected_confirmation(day, "19:00", 2)]
 
 
+def _walk_to_the_last_step(day, last):
+    """前面三步都在查空位,第四步(最後一步,不給工具)回 last。"""
+    check = [_tool_calls(ToolCall("check_availability", {"date": day, "party_size": 4}, id=f"c{i}"))
+             for i in (1, 2, 3)]
+    return [*check, last]
+
+
+def test_a_booking_the_model_asks_for_on_the_last_step_gets_only_the_confirmation(
+        bookable, line_out, monkeypatch):
+    """2026-10-08 實測 NVIDIA 在最後一步不給工具也照樣回 create_booking。預約照樣成立;
+    同時回的文字是在工具結果出來之前寫的,客人收到的只能是程式組的確認句。"""
+    day = bookable
+    create = ToolCall("create_booking", _args(day), id="c4")
+    calls = _llm_seq(monkeypatch, *_walk_to_the_last_step(
+        day, LLMResult("好的,幫您處理", token_count=1, latency_ms=1,
+                       tool_call=create, tool_calls=(create,))))
+    with TestClient(app) as client:
+        _post(client, _body(text="週五晚上 8 點 4 位,王小明 0912-345-678"))
+    assert len(calls) == 4 and calls[3]["tools"] is None   # 真的走到最後一步,而且沒給工具
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4)]
+    with session_scope() as db:
+        assert len(db.scalars(select(Booking)).all()) == 1
+        (answer,) = [r.content for r in db.scalars(select(ChatHistory).order_by(ChatHistory.id))
+                     if r.role.value == "assistant"]
+    assert answer == _expected_confirmation(day, "20:00", 4)
+
+
+def test_a_refused_booking_on_the_last_step_sends_the_fallback_not_the_models_claim(
+        bookable, line_out, monkeypatch):
+    """模型在看到結果之前寫了「已為您訂位」,但這筆超過人數上限、根本沒成立 ——
+    客人不能收到那句話,只能收到 fallback。"""
+    day = bookable
+    create = ToolCall("create_booking", _args(day, party_size=99), id="c4")
+    _llm_seq(monkeypatch, *_walk_to_the_last_step(
+        day, LLMResult("已為您訂位", token_count=1, latency_ms=1,
+                       tool_call=create, tool_calls=(create,))))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == ["我這邊剛剛連線有點問題,可以再問一次嗎?"]
+    with session_scope() as db:
+        assert db.scalars(select(Booking)).all() == []
+
+
 def test_the_program_confirmation_keeps_the_booked_name_as_given(bookable, line_out, monkeypatch):
     """確認句是程式組的、本來就是繁體,不該再過簡繁轉換 —— OpenCC 會把常見姓氏改掉
     (余→餘、于→於),客人會看到自己的名字被寫錯。"""

@@ -3,6 +3,7 @@
 設計見 docs/superpowers/specs/2026-10-06-booking-agent-design.md 第六節。
 - 最多 max_steps 步;最後一步不給工具,不會繞圈到什麼都沒回。但實測 NVIDIA 照樣回工具
   呼叫(2026-10-08,不帶工具、tool_choice none、關思考各 3/3),所以照樣執行、不再問模型;
+  同時回的文字丟掉(那是在工具結果出來之前寫的,可能只是客套話、也可能謊稱已訂位),
   回覆由 webhook 補(有成立預約 → 程式確認句,沒有 → fallback)
 - 所有步驟共用一個截止時間:每一步拿的是剩下的時間,不是每步各一份
 - 轉真人優先:同一個回應裡有 transfer_to_human,其他工具一律不執行
@@ -103,12 +104,14 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
         if last:
             # 最後一步沒給工具,但上游照樣回了工具呼叫(NVIDIA 實測如此):資料齊全的訂位
             # 不能因此丟掉,所以照樣執行。不把結果塞回對話 —— 沒有下一步了,再問一次模型
-            # 只會又得到工具呼叫。回覆由呼叫端補(有成立預約 → 確認句,沒有 → fallback)。
+            # 只會又得到工具呼叫。同時回的文字一律丟掉:那是在工具結果出來之前寫的,
+            # 成立時可能只是「好的,幫您處理」(客人看不到確認句),被拒絕時甚至可能寫著
+            # 「已為您訂位」。text=None,回覆由呼叫端補(有成立預約 → 確認句,沒有 → fallback)。
             logger.warning("agent 最後一步上游仍回工具呼叫(%s),照樣執行、不再問模型",
                            ",".join(c.name for c in calls))
             for c in calls:
                 run_tool(c)
-            return finish(result.text or None, step)
+            return finish(None, step)
 
         msgs.append({"role": "assistant", "content": result.text or "", "tool_calls": [
             {"id": c.id, "type": "function",
