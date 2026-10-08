@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    # 預設關掉思考。2026-10-08 實測:預約說明很長,開著思考時開放式問題(「我想訂位」)
+    # 5 次裡 3 次把 max_tokens 1200 全拿去想、content 是空的(11~37 秒);關掉後
+    # 5/5 在 0.9~3 秒內答出來。只送給 NVIDIA,OpenRouter 不帶這個參數。
+    nvidia_enable_thinking: bool = False
     llm_timeout_seconds: float = 45.0
     # 兩個模型「合計」最多等多久。llm_timeout_seconds 管不到這件事:httpx 的
     # timeout 是兩次讀到資料之間的上限,而 OpenRouter 在生成時會持續送空白

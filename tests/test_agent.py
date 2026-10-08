@@ -449,6 +449,52 @@ def test_an_empty_nvidia_key_means_openrouter_only(two_providers):
     assert calls == [(f"{OR_URL}/chat/completions", "Bearer sk-or-test", "or/free")]
 
 
+def _body_recorder(bodies, responses):
+    """記下每個請求實際送出的 body(依序),回應依 model 分派。"""
+    def handler(request):
+        body = _json.loads(request.content)
+        bodies.append(body)
+        return responses.get(body["model"], lambda: httpx.Response(404, text="unknown model"))()
+    return handler
+
+
+def test_thinking_is_off_by_default_for_nvidia(two_providers):
+    """2026-10-08 實測:預約說明很長,開著思考時開放式問題(「我想訂位」)5 次裡 3 次
+    把 max_tokens 全拿去想、content 是空的。chat_template_kwargs 是 NVIDIA 的參數。"""
+    bodies = []
+    complete([{"role": "user", "content": "我想訂位"}],
+             client=_http(_body_recorder(bodies, {"nv/super": _ok})))
+    assert [b["model"] for b in bodies] == ["nv/super"]
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert bodies[0]["reasoning"] == {"exclude": True}  # 既有的參數照舊
+
+
+def test_nvidia_only_parameters_are_not_sent_to_openrouter(two_providers):
+    """NVIDIA 失敗退回 OpenRouter 時,額外參數跟著 NVIDIA 那組走,不會被帶到另一家。"""
+    bodies = []
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_body_recorder(bodies, {"nv/super": _overloaded, "or/free": _ok})))
+    assert [b["model"] for b in bodies] == ["nv/super", "or/free"]
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "chat_template_kwargs" not in bodies[1]
+
+
+def test_nvidia_thinking_can_be_turned_on_by_setting(two_providers):
+    two_providers.nvidia_enable_thinking = True
+    bodies = []
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_body_recorder(bodies, {"nv/super": _ok})))
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_the_nvidia_thinking_setting_defaults_to_off(monkeypatch):
+    """上面的測試用的是替身設定;真正的預設值寫在 Settings,改成 True 要有測試擋。"""
+    from app.config import Settings
+    monkeypatch.delenv("NVIDIA_ENABLE_THINKING", raising=False)
+    s = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k")
+    assert s.nvidia_enable_thinking is False
+
+
 def test_the_default_nvidia_endpoint_and_model_are_the_ones_nvidia_serves(monkeypatch):
     """模型名不能帶 OpenRouter 的 :free 後綴 —— NVIDIA 不認得那個名字,
     每則訊息都會失敗再退回,看起來「有在動」其實主要模型從沒答過。"""

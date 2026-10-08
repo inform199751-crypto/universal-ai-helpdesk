@@ -69,6 +69,9 @@ class _Endpoint:
     base_url: str
     api_key: str
     model: str
+    # 各家上游自己的額外參數(例如 NVIDIA 的 chat_template_kwargs),跟網址、key 一起走 ——
+    # 另一家不認得的參數會被拒絕或被無視,不該被帶過去。
+    extra_body: dict = field(default_factory=dict)
 
 
 def _endpoints(s) -> list[_Endpoint]:
@@ -83,7 +86,11 @@ def _endpoints(s) -> list[_Endpoint]:
         return _Endpoint("OpenRouter", s.openrouter_base_url, s.openrouter_api_key, model)
 
     if getattr(s, "nvidia_api_key", ""):
-        return [_Endpoint("NVIDIA", s.nvidia_base_url, s.nvidia_api_key, s.nvidia_model),
+        # 思考預設關:預約說明讓開放式問題想到用完 max_tokens(見 config.py 的實測數字)
+        thinking = {"chat_template_kwargs": {
+            "enable_thinking": getattr(s, "nvidia_enable_thinking", False)}}
+        return [_Endpoint("NVIDIA", s.nvidia_base_url, s.nvidia_api_key, s.nvidia_model,
+                          extra_body=thinking),
                 openrouter(s.openrouter_model)]
     endpoints = [openrouter(s.openrouter_model)]
     fallback = getattr(s, "openrouter_fallback_model", None)
@@ -128,6 +135,7 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
     }
     if tools:
         payload["tools"] = tools
+    payload.update(endpoint.extra_body)
     started = time.monotonic()
     try:
         # 用串流邊讀邊看時鐘,不用 http.post 一次讀完:OpenRouter 生成期間
