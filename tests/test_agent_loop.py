@@ -93,8 +93,9 @@ def test_a_handoff_wins_and_other_tools_in_the_same_reply_are_not_run():
 
 def test_the_last_step_still_gets_the_tool_schemas_but_with_tool_choice_none():
     """最後一步想逼模型用文字收尾,所以 tool_choice 是 none(會遵守的上游就改回文字)。
-    但規格一定要帶:NVIDIA 會忽略 tool_choice、照樣呼叫 create_booking,沒有規格的話它看不到
-    必填的 weekday、漏帶,日期防線擋下 → 客人收到 fallback(2026-10-15 真模型驗收)。"""
+    但規格一定要帶:NVIDIA 最後一步照樣呼叫 create_booking(它只拿到規格、不收 tool_choice,
+    由 complete() 逐家決定),沒有規格的話它看不到必填的 weekday、漏帶,日期防線擋下 →
+    客人收到 fallback(2026-10-15 真模型驗收)。"""
     s = Script(_tools(_call("check_availability")),
                _tools(_call("check_availability", call_id="c2")),
                _text("請問要哪個時段?"))

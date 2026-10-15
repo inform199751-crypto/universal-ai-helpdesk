@@ -65,6 +65,13 @@
 |---|---|---|
 | 強迫走到最後一步:第 1 步 `check_availability`(有帶 weekday)正常,第 2 步是最後一步、`tools=None` | NVIDIA 照樣呼叫 `create_booking`,但**沒帶 `weekday`**(看不到規格)→ 日期防線擋下 → 客人收到 fallback。沒有防線時同一條路會訂成功。防線讓「星期填錯 → 重查」多用一步,走到最後一步的機會也變大 | 最後一步也帶工具規格;`complete()` 多一個 `tool_choice` 參數(OpenRouter 的上游收 `"none"`,會遵守的改回文字)。第一版連 NVIDIA 也送 `tool_choice`,見下一列 |
 | 上一列的第一版(commit `e82a7ad`:最後一步帶規格 + `tool_choice: "none"`,兩家上游都送)再驗收,以及單獨量最後一步(前一步 `check_availability` 帶 weekday「五」) | NVIDIA 強迫走到最後一步只成功 1/3,失敗的兩次都是 `create_booking` 漏 `weekday`、被防線擋下。單獨量:只送 tools、不送 `tool_choice`,參數 3/3 齊全(weekday「五」、`party_size` 整數 4);tools + `tool_choice: "none"`,3 次裡 2 次漏 `weekday`、`party_size` 變字串 `"4"` —— NVIDIA(vLLM)似乎在 none 時把規格拿掉、卻照樣吐工具呼叫。OpenRouter 收 `"none"` 照樣訂成功 | NVIDIA 一律不送 `tool_choice`(`_Endpoint.drop_tool_choice`,只有 NVIDIA 為 True);OpenRouter 的上游照送 |
+| 最終版本(`d79d9e2`:NVIDIA 只給規格、不送 `tool_choice`)再驗收 | 最後一步 4/4 訂位成立(對照:不給工具 0/1、NVIDIA 給工具 + `tool_choice: none` 1/3);一句講完 3/3;OpenRouter(`openrouter/free`)備援收到 `tool_choice: none` 沒有被拒絕,訂位成立 1/1 | 維持現狀 |
+
+整輪結果(關思考、有日期防線):建立的訂位 39 筆,**日期錯 0 筆**(「週五」= 2026-10-16;客人直接講的 10/17 也沒被改)。
+分四句講 8/9(沒過那次模型一直反問「哪個週五」,沒有訂錯)、一句講完 10/12(沒過的兩次是多問一句「今天幾號」
+「這樣要訂嗎」,沒有訂錯)、客人直接講日期 9/9、時段已滿 6/6 沒有硬訂、診所 6/6(extra 都是 `{"service": "青春痘"}`)。
+轉真人(加了防騙提醒之後)3 輪共 30 題,漏轉 0、誤轉 0,夾帶假系統提示那題 3/3 有轉(其中 1 次是安全網接住、類別未標)。
+「我想訂位」第一句回覆中位數 1.7 秒(1.1~6.9 秒);開思考時最壞 37 秒且 3/5 拿到空內容。完整表格見 `docs/report.md` 第六節。
 
 ## 三、整體流程
 
@@ -326,12 +333,12 @@ OpenRouter 收 none 沒問題,所以由 `complete()` 逐家決定,loop 不管。
 - CI:SQLite 與 PostgreSQL 各一輪
 
 **真模型驗收(不進 CI)**:部署前用正式的 prompt 與工具定義重跑實測情境(分四句、一句講完、已滿時段、診所),
-「分四句」要能穩定完成。
+「分四句」要能穩定完成。2026-10-15 已用 NVIDIA super 重跑,數字見第二節的驗收表。
 
 ## 十一、驗收標準
 
 - [ ] 全套測試通過,兩個 CI job 都綠
-- [ ] 真模型驗收:四個情境各 3 次,建立的預約日期全對、沒有在已滿時段建立
+- [x] 真模型驗收:四個情境各 3 次,建立的預約日期全對、沒有在已滿時段建立(2026-10-15:39 筆日期錯 0 筆;已滿時段 6/6 沒有硬訂)
 - [ ] 部署後 `alembic upgrade head` 自動完成,重跑 seed 後 `booking_config` 有值
 - [ ] 手機在 LINE 上完整訂一次位,收到確認;`app.cli bookings` 列得出那筆
 - [ ] log 有 `agent 步數=…` 與 `{label}成立 …`(餐廳是「訂位成立」)

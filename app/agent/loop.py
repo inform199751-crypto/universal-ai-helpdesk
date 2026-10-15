@@ -116,7 +116,7 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
             return finish(None, step, handoff)
 
         if last:
-            # 最後一步送了 tool_choice none,但上游照樣回了工具呼叫(NVIDIA 實測如此):
+            # 最後一步上游照樣回了工具呼叫(NVIDIA 實測如此:它只拿到規格、不收 tool_choice):
             # 資料齊全的訂位不能因此丟掉,所以照樣執行。不把結果塞回對話 —— 沒有下一步了,
             # 再問一次模型只會又得到工具呼叫。同時回的文字一律丟掉:那是在工具結果出來之前寫的,
             # 成立時可能只是「好的,幫您處理」(客人看不到確認句),被拒絕時甚至可能寫著
