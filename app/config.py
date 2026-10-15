@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     openrouter_fallback_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     # NVIDIA 自家 API(build.nvidia.com)。選填:有 key 時它當主要模型、OpenRouter
     # 退成備援;沒有(含 compose 傳進來的空字串)就跟以前一樣只走 OpenRouter。
-    # 2026-10-05 實測 10 題,super 轉真人 5/5、誤轉 0、中位數 1.5 秒 —— 同一顆
+    # 2026-10-05 實測 10 題(當時思考是開的),super 轉真人 5/5、誤轉 0、中位數 1.5 秒 —— 同一顆
     # 模型在 OpenRouter 的 :free 版 9/24 四次全限流。免費層是每分鐘約 40 次,
     # 沒有每日上限。模型名不帶 :free:那是 OpenRouter 的命名,NVIDIA 不認得。
     nvidia_api_key: str = ""
