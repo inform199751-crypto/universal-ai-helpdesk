@@ -148,9 +148,9 @@ transfer 少了 category 則工具定義產生不出來 —— 兩種都不會�
 
 ### 自動測試
 
-492 個測試(490 通過、2 跳過),在 Python 3.11 與 3.13 上由 GitHub Actions
+494 個測試(492 通過、2 跳過),在 Python 3.11 與 3.13 上由 GitHub Actions
 每次 push 執行;另有一個專跑 PostgreSQL 的 CI job(`test-postgres`),
-同一套測試在兩種資料庫上都要過。**測試碼 5,584 行,比正式碼的 3,131 行還多。**
+同一套測試在兩種資料庫上都要過。**測試碼 5,614 行,比正式碼的 3,144 行還多。**
 CI 與正式映像都照 `constraints.txt` 安裝同一組鎖定版本(見第七節第 11 點)。
 
 測試不碰網路也不碰檔案系統上的資料庫:`conftest.py` 把 `DATABASE_URL`
@@ -417,11 +417,18 @@ loop 不能建立在這個假設上。這條有回歸測試(最後一步的工�
 2026-10-15 真模型驗收又補了一刀:日期防線(第 15 點)讓 `weekday` 變必填之後,強迫走到最後一步的那次,第 1 步
 `check_availability` 正常,第 2 步(最後一步、`tools=None`)NVIDIA 照樣呼叫 `create_booking`,但因為看不到規格,
 **沒帶 `weekday`** —— 防線擋下,客人收到 fallback(沒有防線時同一條路會訂成功)。而且防線讓「星期填錯 → 重查」
-多用一步,走到最後一步的機會變大。現在最後一步**也帶工具規格**,另加 `tool_choice: "none"`:會遵守的上游改回文字;
-NVIDIA 仍會忽略它、照樣呼叫工具,但至少看得到完整規格,必填欄位不會漏。`complete()` 因此多一個 `tool_choice` 參數
-(只在有 tools 時才送,備援上游一樣)。**模型反正會呼叫的時候,看不到規格比看得到更糟。** 回歸測試:最後一步 tools 照帶、
-tool_choice 是 none,前面幾步沒有;沒有工具時兩個都不送;請求 body 的 tool_choice 跟著 tools 才送、備援上游一樣。
-真模型的數字還沒有 —— 要等重跑驗收之後。
+多用一步,走到最後一步的機會變大。現在最後一步**也帶工具規格**。`complete()` 因此多一個 `tool_choice` 參數
+(只在有 tools 時才送):OpenRouter 的上游收 `"none"`,會遵守的改回文字。
+
+但 **NVIDIA 一律不送 `tool_choice`**。第一版(`e82a7ad`)兩家都送,同一天的再驗收馬上抓到:NVIDIA 強迫走到最後一步
+只成功 1/3,失敗的兩次都是 `create_booking` 漏 `weekday`。單獨量最後一步:只送 tools,`create_booking` 的參數
+3/3 齊全(`weekday`「五」、`party_size` 整數 4);送 tools + `tool_choice: "none"`,3 次裡 2 次漏 `weekday`、
+`party_size` 變成字串 `"4"` —— NVIDIA(vLLM)似乎在 none 時把規格拿掉、卻照樣吐工具呼叫,等於又回到沒有規格。
+OpenRouter 收 none 照樣訂成功,所以用 `_Endpoint.drop_tool_choice`(只有 NVIDIA 為 True)逐家決定,loop 不用管。
+**模型反正會呼叫的時候,看不到規格比看得到更糟;而同一個參數在兩家上游的意思還可能不一樣,要逐家量。**
+回歸測試:最後一步 tools 照帶、tool_choice 是 none,前面幾步沒有;沒有工具時兩個都不送;請求 body 的 tool_choice
+跟著 tools 才送;NVIDIA 的 body 一律沒有 tool_choice(規格照帶)、退回 OpenRouter 時才有;真的 `_endpoints()` 只有
+NVIDIA 那筆丟掉。修正後的完整驗收還沒有重跑 —— 真模型的數字要等那之後。
 
 ### 15. 關掉思考之後,模型不查表、自己算日期,把週五訂成週六
 

@@ -33,7 +33,7 @@
 | 2 | 成立方式 | 有名額就直接成立 | 客人當下得到結果才是 bot 預約的價值;「店家確認」需要後台介面,範圍約兩倍,且店員端無法實測(只有一個 LINE 帳號) |
 | 3 | 名額 | 以「組」計,每筆另有人數上限 | 餐廳與診所都適用;以座位計會牽涉桌位排列,與 agent 無關 |
 | 4 | loop 實作 | 自己寫 tool-calling 迴圈 | 面試要講得出迴圈怎麼運作;沿用既有的時間上限、備援、savepoint。只讓模型抽欄位(不跑迴圈)就不是 agent;框架會把迴圈藏起來,也跟「證明會做系統」的初衷相反 |
-| 5 | 步數上限 | 4 步,最後一步帶工具規格但 `tool_choice: none`;模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補 | 實測最多用 3 步;最後一步用 `tool_choice: none` 請上游改回文字,不會繞圈到什麼都沒回。2026-10-08 實測 NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法下都照樣回 `create_booking`(各 3/3)—— 丟掉的話資料齊全的訂位不會成立,所以照樣執行,結果不再塞回對話。**規格仍要帶**:日期防線讓 `weekday` 變必填後,沒有規格的最後一步 NVIDIA 照樣呼叫 `create_booking` 卻漏帶 `weekday`(看不到規格),被防線擋下、客人收到 fallback(2026-10-15) |
+| 5 | 步數上限 | 4 步,最後一步帶工具規格(OpenRouter 另帶 `tool_choice: none`,NVIDIA 只給規格、不送);模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補 | 實測最多用 3 步;最後一步用 `tool_choice: none` 請上游改回文字(NVIDIA 例外,見下),不會繞圈到什麼都沒回。2026-10-08 實測 NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法下都照樣回 `create_booking`(各 3/3)—— 丟掉的話資料齊全的訂位不會成立,所以照樣執行,結果不再塞回對話。**規格仍要帶**:日期防線讓 `weekday` 變必填後,沒有規格的最後一步 NVIDIA 照樣呼叫 `create_booking` 卻漏帶 `weekday`(看不到規格),被防線擋下、客人收到 fallback(2026-10-15)。**但 `tool_choice` 不能送給 NVIDIA**:同一天量到只送規格 3/3 參數齊全,加 `tool_choice: none` 變 1/3(漏 `weekday`、`party_size` 變字串),所以 NVIDIA 只拿到規格 |
 | 6 | 時間上限 | 整個 loop 45 秒(原本每則 25 秒) | 實測每步 1–13 秒,3 步最長超過 22 秒;LINE reply token 約一分鐘有效,留 15 秒給送出與備援 |
 | 7 | 日期 | **程式提供未來 N 天的日期對照表**,並規定「週五」= 從今天起算最近的那一天(今天就是週五則指今天) | 實測:沒有對照表時模型把 10/10 當週五;有對照表後全對。模型反覆追問「本週五還是下週五」,是 prompt 本身寫了歧義 |
 | 8 | 把關 | 所有檢查在程式裡(`app/booking.py`),模型只負責對話 | 模型是會出錯的那一方;不通過就回傳中文錯誤,讓模型向客人解釋 |
@@ -56,14 +56,15 @@
 | 情境 | 結果 | 處置 |
 |---|---|---|
 | 客人只說「我想訂位」(開放式問題),開著思考 | 5 次裡 3 次把 `max_tokens`(1200)全拿去思考、`finish_reason=length`、content 是空的(11~37 秒)→ `LLMError("拿不到內容")` → 客人收到 fallback;沒有預約說明的線上版 5/5 約 1.5 秒 | 送 `chat_template_kwargs.enable_thinking=false` 後 5/5 在 0.9~3 秒內正常回答 → `nvidia_enable_thinking = False` |
-| 最後一步,對話裡已有 assistant `tool_calls` 與 `role: tool` | 不帶 `tools`:3/3 照樣回 `create_booking`;帶 `tools` + `tool_choice: none`:3/3 一樣;關思考:3/3 一樣 | loop 最後一步仍想逼文字收尾(2026-10-15 改成帶規格 + `tool_choice: none`,見下一節),但回來的工具呼叫照樣執行、不再問模型;同時回的文字丟掉 |
+| 最後一步,對話裡已有 assistant `tool_calls` 與 `role: tool` | 不帶 `tools`:3/3 照樣回 `create_booking`;帶 `tools` + `tool_choice: none`:3/3 一樣;關思考:3/3 一樣 | loop 最後一步仍想逼文字收尾(2026-10-15 改成帶規格,OpenRouter 另帶 `tool_choice: none`、NVIDIA 只給規格,見下一節),但回來的工具呼叫照樣執行、不再問模型;同時回的文字丟掉 |
 | 關掉思考後,「分四句」說週五(實測當天是週四) | 3 次裡 2 次訂成 2026-10-10(週六):模型不查日期對照表、自己心算「今天週四 → 週五是 10/10」;`check_availability` 回了 `"weekday": "六"` 也沒發現,最後還說「已訂好 10/10 星期六」。開著思考 3/3 正確,但開思考會讓開放式問題想到沒答案 | 思考維持關閉;工具加必填 `weekday`、程式擋星期不符(§五);prompt 加「星期→日期」直接查的一行 |
 
 ### 2026-10-15 真模型驗收(日期防線之後,NVIDIA `nemotron-3-super-120b-a12b`)
 
 | 情境 | 結果 | 處置 |
 |---|---|---|
-| 強迫走到最後一步:第 1 步 `check_availability`(有帶 weekday)正常,第 2 步是最後一步、`tools=None` | NVIDIA 照樣呼叫 `create_booking`,但**沒帶 `weekday`**(看不到規格)→ 日期防線擋下 → 客人收到 fallback。沒有防線時同一條路會訂成功。防線讓「星期填錯 → 重查」多用一步,走到最後一步的機會也變大 | 最後一步也帶工具規格、`tool_choice: "none"`:NVIDIA 仍會呼叫,但看得到完整規格;會遵守的上游則改回文字。`complete()` 多一個 `tool_choice` 參數 |
+| 強迫走到最後一步:第 1 步 `check_availability`(有帶 weekday)正常,第 2 步是最後一步、`tools=None` | NVIDIA 照樣呼叫 `create_booking`,但**沒帶 `weekday`**(看不到規格)→ 日期防線擋下 → 客人收到 fallback。沒有防線時同一條路會訂成功。防線讓「星期填錯 → 重查」多用一步,走到最後一步的機會也變大 | 最後一步也帶工具規格;`complete()` 多一個 `tool_choice` 參數(OpenRouter 的上游收 `"none"`,會遵守的改回文字)。第一版連 NVIDIA 也送 `tool_choice`,見下一列 |
+| 上一列的第一版(commit `e82a7ad`:最後一步帶規格 + `tool_choice: "none"`,兩家上游都送)再驗收,以及單獨量最後一步(前一步 `check_availability` 帶 weekday「五」) | NVIDIA 強迫走到最後一步只成功 1/3,失敗的兩次都是 `create_booking` 漏 `weekday`、被防線擋下。單獨量:只送 tools、不送 `tool_choice`,參數 3/3 齊全(weekday「五」、`party_size` 整數 4);tools + `tool_choice: "none"`,3 次裡 2 次漏 `weekday`、`party_size` 變字串 `"4"` —— NVIDIA(vLLM)似乎在 none 時把規格拿掉、卻照樣吐工具呼叫。OpenRouter 收 `"none"` 照樣訂成功 | NVIDIA 一律不送 `tool_choice`(`_Endpoint.drop_tool_choice`,只有 NVIDIA 為 True);OpenRouter 的上游照送 |
 
 ## 三、整體流程
 
@@ -74,7 +75,7 @@
          ├ 文字           → 結束
          ├ transfer_to_human → 結束,走既有轉真人流程(優先;同一回應的其他工具不執行)
          └ 預約工具        → 執行 → 結果放回對話 → 下一步
-       第 4 步(最後一步):帶工具規格、tool_choice none
+       第 4 步(最後一步):帶工具規格(OpenRouter 另帶 tool_choice none;NVIDIA 不送)
          ├ 文字           → 結束
          ├ transfer_to_human → 結束,走既有轉真人流程(優先)
          └ 仍回預約工具    → 照樣執行,不再問模型;回覆由程式補(成立 → 確認句,否則 fallback)
@@ -147,7 +148,7 @@ fields:
 
 | 欄位 | 預設 | 說明 |
 |---|---|---|
-| `agent_max_steps` | 4 | 最後一步帶工具規格但 `tool_choice: none`;模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補(2026-10-08 實測 NVIDIA 不帶工具照樣回工具呼叫;規格仍要帶,見第六節) |
+| `agent_max_steps` | 4 | 最後一步帶工具規格(OpenRouter 另帶 `tool_choice: none`,NVIDIA 不送);模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補(2026-10-08 實測 NVIDIA 不帶工具照樣回工具呼叫;規格仍要帶,見第六節) |
 | `agent_total_budget_seconds` | 45 | 整個 loop 合計;每一步拿剩下的時間 |
 | `nvidia_enable_thinking` | False | 送給 NVIDIA 的 `chat_template_kwargs.enable_thinking`,預設關。2026-10-08 實測:預約說明很長,開著思考時開放式問題 5 次裡 3 次把 `max_tokens` 用光、content 是空的(11~37 秒);關掉後 5/5 在 0.9~3 秒內答出。只送 NVIDIA,OpenRouter 不帶 |
 
@@ -225,21 +226,24 @@ def run_agent(messages, *, tools, execute, max_steps, budget_seconds, complete_f
 每一步:
 
 1. 剩餘時間 = 截止時間 − 現在;不足 1 秒就停止
-2. `complete(messages, tools=… , deadline=…)`;第 `agent_max_steps` 步(最後一步)工具規格照帶、另加 `tool_choice="none"`(見下)。呼叫失敗(`LLMError`,或上游回應
+2. `complete(messages, tools=… , deadline=…)`;第 `agent_max_steps` 步(最後一步)工具規格照帶、另加 `tool_choice="none"`(NVIDIA 除外,見下)。呼叫失敗(`LLMError`,或上游回應
    格式怪異時的其他例外)→ 停止並回傳 `text=None`,本次已成立的 `booking` 照樣帶著
 3. 有 `transfer_to_human` → 立刻回傳 `handoff`,不執行同一回應裡的其他工具
 4. 其他工具 → 依序執行;把 assistant 的 `tool_calls` 與每個 `{"role": "tool", "tool_call_id", "content"}`
    附加到 messages;工具丟例外時以 `{ok: false, error: "系統暫時無法處理"}` 作為結果
 5. 沒有工具呼叫 → 回傳文字
 
-**最後一步**:工具規格照帶、另加 `tool_choice: "none"`(會遵守的上游因此改回文字;沒有工具時維持 `tools=None`、不帶
-`tool_choice`),但回來的工具呼叫不丟掉 —— 有 `transfer_to_human`
+**最後一步**:工具規格照帶、另加 `tool_choice: "none"`(OpenRouter 的上游收到,會遵守的因此改回文字;NVIDIA 不送,見下;
+沒有工具時維持 `tools=None`、不帶 `tool_choice`),但回來的工具呼叫不丟掉 —— 有 `transfer_to_human`
 照樣轉真人優先、其他工具照樣依序執行(記進 `tools_used`、成立的 `booking` 記下來、例外變 `{ok: false, …}`),
 執行完直接回傳 `text=None`,不把結果放回對話、不再呼叫模型。模型同時回的文字一律丟掉 —— 那是在工具結果出來之前
 寫的:成立時可能只是「好的,幫您處理」(客人看不到確認句),被拒絕時甚至可能寫著「已為您訂位」。2026-10-08 實測
 NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法下都照樣回 `create_booking`(各 3/3)。
 既然它照樣呼叫,就要讓它看得到規格:日期防線讓 `weekday` 變必填後(2026-10-15 真模型驗收),沒有規格的最後一步
 NVIDIA 呼叫 `create_booking` 時漏帶 `weekday`,被防線擋下,客人收到 fallback。
+但 `tool_choice` 不能送給 NVIDIA:只送規格、不送 `tool_choice`,`create_booking` 的參數 3/3 齊全;加上 `tool_choice: "none"`
+變成 1/3(3 次裡 2 次漏 `weekday`、`party_size` 變字串 `"4"`)—— NVIDIA(vLLM)似乎在 none 時把規格拿掉、卻照樣吐工具呼叫。
+OpenRouter 收 none 沒問題,所以由 `complete()` 逐家決定,loop 不管。
 回覆由 webhook 補:有成立的 `booking` → 程式組的確認句;沒有 → fallback。
 
 每則訊息寫一行 info log:`agent 步數=3 工具=check_availability,create_booking`。
@@ -250,7 +254,8 @@ NVIDIA 呼叫 `create_booking` 時漏帶 `weekday`,被防線擋下,客人收到 
 - `complete()` 接受選填的 `deadline`(monotonic 秒),有傳就用它取代 `llm_total_budget_seconds`;每個請求本身的
   timeout 也縮到剩下的時間(最少 0.5 秒)—— NVIDIA 不串流,生成完之前一個位元組都不送,只在收到資料時看時鐘擋不住
 - `complete()` 接受選填的 `tool_choice`(例如 `"none"`),**只有在有 tools 時**才放進請求(沒有 tools 的 tool_choice
-  上游會當成錯誤);每一步各自走備援時,備援上游也照樣送同一個
+  上游會當成錯誤);而且 `_Endpoint.drop_tool_choice` 為 True 的上游(只有 NVIDIA)一律不送 —— 上面實測的 3/3 對 1/3。
+  OpenRouter 的上游照送,所以 NVIDIA 失敗退到 OpenRouter 時,備援那一次會帶 `tool_choice: "none"`
 - 每一步各自走 NVIDIA → OpenRouter 的備援
 - 各家上游自己的額外參數放在 `_Endpoint.extra_body`,跟網址、key 一起走:NVIDIA 帶
   `chat_template_kwargs`(`nvidia_enable_thinking`,預設 False),OpenRouter 不帶
@@ -263,7 +268,7 @@ NVIDIA 呼叫 `create_booking` 時漏帶 `weekday`,被防線擋下,客人收到 
 | 還沒成立就超時、模型全部失敗 | 既有的 fallback 訊息 |
 | 工具回傳錯誤(名額被搶、格式不對) | 當成工具結果還給模型,由模型解釋並建議其他時段 |
 | 工具丟例外 | `{ok: false, error: "系統暫時無法處理"}` 給模型;log 記 exception |
-| 步數用完 | 最後一步帶工具規格但 `tool_choice: none`;模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補(成立 → 確認句,沒有 → fallback)。2026-10-08 實測 NVIDIA 不帶工具照樣回工具呼叫 |
+| 步數用完 | 最後一步帶工具規格(OpenRouter 另帶 `tool_choice: none`,NVIDIA 不送);模型仍回工具呼叫時照樣執行(轉真人優先),不再問模型,回覆由程式補(成立 → 確認句,沒有 → fallback)。2026-10-08 實測 NVIDIA 不帶工具照樣回工具呼叫 |
 | 模型呼叫不存在的工具 | `{ok: false, error: "沒有這個工具"}` |
 | 推播店員失敗 | 只記 log,不影響預約 |
 
@@ -310,8 +315,9 @@ NVIDIA 呼叫 `create_booking` 時漏帶 `weekday`,被防線擋下,客人收到 
   步數用完時最後一步帶著工具規格與 `tool_choice: none`(前面幾步沒有 tool_choice;沒有工具時最後一步是 `tools=None`、也沒有 tool_choice)、回來的工具呼叫照樣執行且不再問模型(轉真人優先;同時回的文字丟掉,成立與被拒絕各一條);**建立後超時 → 結果帶 `booking` 且沒有文字**;工具錯誤與例外回給模型;
   不存在的工具;每一步拿剩下的時間
 - **`test_agent.py`**:多個 tool_calls 都解析出來(含 id);`deadline` 取代預設上限;送 NVIDIA 的 body 預設帶
-  `enable_thinking: false`(可由設定打開)、退回 OpenRouter 時不帶;`tool_choice` 跟著 tools 一起送(備援上游也照送)、
-  沒給或沒有 tools 時 body 沒有這個鍵
+  `enable_thinking: false`(可由設定打開)、退回 OpenRouter 時不帶;`tool_choice` 跟著 tools 一起送、
+  沒給或沒有 tools 時 body 沒有這個鍵;NVIDIA 的 body 一律沒有 `tool_choice`(規格照帶)、退回 OpenRouter 時才有;
+  真的 `_endpoints()` 只有 NVIDIA 那筆 `drop_tool_choice` 為 True
 - **`test_webhook.py`**:整段訂位寫進 `bookings`;最後一步(帶工具規格與 tool_choice none)才回 `create_booking` 時客人只收到確認句(被拒絕則收到 fallback);對話紀錄只有 user + 最後文字;超時時送出程式組的確認句;建立後又轉真人時,轉真人的話前面接上確認句;
   有 `staff_notify_to` 時推播;模型填錯 weekday 時錯誤原文回給模型、改正後才成立;限流照樣在 loop 之前擋;沒有 `booking_config` 時工具清單沒有預約工具
 - **`test_validate.py`**:規則 11 的每一種 ERROR;規則 12 的 BLOCK;沒有 `booking.yaml` 不報錯
