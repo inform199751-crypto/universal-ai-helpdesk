@@ -1025,9 +1025,13 @@ def _tool_calls(*calls):
     return LLMResult("", token_count=1, latency_ms=1, tool_call=calls[0], tool_calls=tuple(calls))
 
 
+def _wd(day):
+    return "一二三四五六日"[date.fromisoformat(day).weekday()]
+
+
 def _args(day, **over):
-    return {"date": day, "time": "20:00", "party_size": 4, "name": "王小明",
-            "phone": "0912-345-678", **over}
+    return {"date": day, "weekday": _wd(day), "time": "20:00", "party_size": 4,
+            "name": "王小明", "phone": "0912-345-678", **over}
 
 
 def _expected_confirmation(day, time, n):
@@ -1039,7 +1043,9 @@ def test_a_booking_conversation_saves_the_booking_and_sends_the_models_answer(
         bookable, line_out, monkeypatch):
     day = bookable
     calls = _llm_seq(monkeypatch,
-                     _tool_calls(ToolCall("check_availability", {"date": day, "party_size": 4}, id="c1")),
+                     _tool_calls(ToolCall("check_availability",
+                                          {"date": day, "weekday": _wd(day), "party_size": 4},
+                                          id="c1")),
                      _tool_calls(ToolCall("create_booking", _args(day), id="c2")),
                      LLMResult("已為您訂好", token_count=1, latency_ms=1))
     with TestClient(app) as client:
@@ -1053,6 +1059,27 @@ def test_a_booking_conversation_saves_the_booking_and_sends_the_models_answer(
     assert "日期對照" in calls[0]["messages"][0]["content"]
     assert {t["function"]["name"] for t in calls[0]["tools"]} >= {"check_availability",
                                                                    "create_booking"}
+
+
+def test_a_booking_with_the_wrong_weekday_is_bounced_back_to_the_model_and_corrected(
+        bookable, line_out, monkeypatch):
+    """模型把日期訂在週 X、weekday 卻填了另一天:什麼都不訂,錯誤原文(兩種讀法)回給模型,
+    它照客人說的改正後再呼叫一次才成立。"""
+    day = bookable
+    wrong = "一二三四五六日"[(date.fromisoformat(day).weekday() + 1) % 7]
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("create_booking", _args(day, weekday=wrong), id="c1")),
+                     _tool_calls(ToolCall("create_booking", _args(day), id="c2")),
+                     LLMResult("已為您訂好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    bounced = json.loads(calls[1]["messages"][-1]["content"])
+    assert bounced["ok"] is False
+    assert f"{day} 是週{_wd(day)},不是週{wrong}" in bounced["error"]
+    assert f"weekday 請填「{_wd(day)}」" in bounced["error"]
+    assert _replies(line_out) == ["已為您訂好"]
+    with session_scope() as db:
+        assert len(db.scalars(select(Booking)).all()) == 1
 
 
 def test_when_the_model_fails_after_booking_only_the_confirmation_is_sent(
@@ -1069,7 +1096,8 @@ def test_when_the_model_fails_after_booking_only_the_confirmation_is_sent(
 
 def _walk_to_the_last_step(day, last):
     """前面三步都在查空位,第四步(最後一步,不給工具)回 last。"""
-    check = [_tool_calls(ToolCall("check_availability", {"date": day, "party_size": 4}, id=f"c{i}"))
+    check = [_tool_calls(ToolCall("check_availability",
+                                  {"date": day, "weekday": _wd(day), "party_size": 4}, id=f"c{i}"))
              for i in (1, 2, 3)]
     return [*check, last]
 
