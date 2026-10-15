@@ -298,12 +298,12 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                           complete_fn=complete)
         logger.info("agent 步數=%d 工具=%s", agent.steps, ",".join(agent.tools_used) or "無")
 
-        # 預約成立了,但送出去的若不是模型自己的回答(模型失敗、轉真人、安全網),
-        # 就由程式補確認句 —— 客人絕不能訂好了卻不知道。重複呼叫時 agent.booking
-        # 是已存在的那一筆,對客人再說一次無妨。
-        confirmation = ""
-        if agent.booking:
-            confirmation = booking.confirmation_text(booking_config, agent.booking)
+        # 預約成立了,但送出去的若不是模型自己的回答(模型失敗、轉真人、安全網;
+        # 最後一步執行了工具也會讓 text 是 None),就由程式補確認句 —— 客人絕不能訂好了
+        # 卻不知道。一輪訂到好幾筆時每筆一句:只講最後一筆,客人不知道還有別筆。
+        # 重複呼叫時那一筆是已存在的預約,對客人再說一次無妨。
+        booked = agent.bookings or ((agent.booking,) if agent.booking else ())
+        confirmation = "\n".join(booking.confirmation_text(booking_config, b) for b in booked)
 
         def notify_new_bookings() -> None:
             # 一定要在回覆客人之後才呼叫:reply token 約一分鐘有效、loop 最多用掉
@@ -323,7 +323,8 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             return
 
         if agent.text is None:
-            # 模型失敗或超時。已經成立預約的話只送確認句 —— 客人要辦的事辦成了,
+            # 模型失敗、超時,或最後一步執行了工具(文字丟掉了,見 loop.py)。
+            # 已經成立預約的話只送確認句 —— 客人要辦的事辦成了,
             # 再接「連線有點問題,可以再問一次嗎」只會讓人以為沒訂到。
             answer = confirmation or fallback
             tokens, latency = None, None

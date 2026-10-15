@@ -169,6 +169,55 @@ def test_a_failure_after_booking_still_reports_the_booking():
     assert (r.text, r.booking, r.steps) == (None, BOOKED, 2)
 
 
+BOOKED_SAT = {**BOOKED, "date": "2026-10-10", "weekday": "六"}
+
+
+def _book_by_date(name, args):
+    """create_booking 依參數裡的日期回對應的預約,其他工具回空的查詢結果。"""
+    if name != "create_booking":
+        return {"slots": []}
+    return {"ok": True, "booking": BOOKED_SAT if args.get("date") == "2026-10-10" else BOOKED}
+
+
+def test_two_bookings_on_the_last_step_are_both_reported_in_order():
+    """最後一步回兩個 create_booking、兩筆都成立:只回最後一筆的話,客人只被告知 10/10,
+    店員卻收到兩則推播 —— 客人不知道自己還有一筆 10/09。"""
+    s = Script(_tools(_call("check_availability")),
+               _tools(_call("create_booking", {"date": "2026-10-09"}, "c2"),
+                      _call("create_booking", {"date": "2026-10-10"}, "c3")))
+    r = _run(s, _book_by_date, max_steps=2)
+    assert r.bookings == (BOOKED, BOOKED_SAT)
+    assert r.booking == BOOKED_SAT   # 既有欄位照舊是最後一筆
+    assert r.text is None
+
+
+def test_two_bookings_followed_by_a_model_failure_are_both_reported():
+    s = Script(_tools(_call("create_booking", {"date": "2026-10-09"}, "c1")),
+               _tools(_call("create_booking", {"date": "2026-10-10"}, "c2")),
+               LLMError("上游掛了"))
+    r = _run(s, _book_by_date)
+    assert (r.text, r.bookings, r.booking) == (None, (BOOKED, BOOKED_SAT), BOOKED_SAT)
+
+
+def test_a_duplicate_of_the_same_slot_is_listed_once_where_it_first_happened():
+    """模型重複呼叫同一時段,工具回 duplicate(帶著已存在的那一筆):同一筆對客人只講一次。"""
+    def execute(name, args):
+        out = _book_by_date(name, args)
+        return {**out, "duplicate": True} if args.get("dup") else out
+
+    s = Script(_tools(_call("create_booking", {"date": "2026-10-09"}, "c1")),
+               _tools(_call("create_booking", {"date": "2026-10-10"}, "c2")),
+               _tools(_call("create_booking", {"date": "2026-10-09", "dup": True}, "c3")),
+               _text("好"))
+    r = _run(s, execute)
+    assert r.bookings == (BOOKED, BOOKED_SAT)
+    assert r.booking == BOOKED   # 最後一個成立(含 duplicate)的結果
+
+
+def test_no_booking_means_an_empty_bookings_tuple():
+    assert _run(Script(_text("您好"))).bookings == ()
+
+
 def test_an_unexpected_error_from_the_model_after_booking_still_reports_the_booking():
     """上游回了格式怪異的東西,解析時丟的不是 LLMError(例如 tool_calls 裡夾著字串):
     已經成立的預約不能因此掉成通用 fallback —— 結果要帶 booking、沒有文字,

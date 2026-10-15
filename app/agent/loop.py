@@ -38,7 +38,11 @@ TOOL_FAILURE = {"ok": False, "error": "系統暫時無法處理"}
 class AgentResult:
     text: str | None                 # 最後的文字回答;None = 模型失敗、超時或沒回文字
     handoff: ToolCall | None = None  # 模型要轉真人
-    booking: dict | None = None      # 這次成立的預約(工具回傳的 booking)
+    booking: dict | None = None      # 這次成立的預約(工具回傳的 booking);有好幾筆時是最後一筆
+    # 這一輪所有成立的預約(含 duplicate),依發生順序、同一個日期時段只列一次。
+    # 一輪可能訂到兩筆(最後一步一次回兩個 create_booking,或訂完一筆又訂一筆後超時),
+    # 只看 booking 的話客人只被告知最後一筆,店員卻收到兩則推播。
+    bookings: tuple[dict, ...] = ()
     steps: int = 0
     tools_used: tuple[str, ...] = ()
     token_count: int | None = None
@@ -59,12 +63,14 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
     deadline = time.monotonic() + budget_seconds
     msgs = list(messages)
     booking: dict | None = None
+    bookings: list[dict] = []
     used: list[str] = []
     tokens: int | None = None
     latency = 0  # 各步模型回報的 latency 加總(含每一步裡的備援),跟以前記的是同一種數字
 
     def finish(text: str | None, steps: int, handoff: ToolCall | None = None) -> AgentResult:
-        return AgentResult(text=text, handoff=handoff, booking=booking, steps=steps,
+        return AgentResult(text=text, handoff=handoff, booking=booking,
+                           bookings=tuple(bookings), steps=steps,
                            tools_used=tuple(used), token_count=tokens, latency_ms=latency)
 
     def run_tool(c: ToolCall) -> dict:
@@ -79,6 +85,10 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
             out = dict(TOOL_FAILURE)
         if out.get("ok") and out.get("booking"):
             booking = out["booking"]
+            # 重複呼叫同一時段時工具回的是已存在的那一筆:對客人講一次就好
+            slot = (booking.get("date"), booking.get("time"))
+            if all((b.get("date"), b.get("time")) != slot for b in bookings):
+                bookings.append(booking)
         return out
 
     for step in range(1, max_steps + 1):
