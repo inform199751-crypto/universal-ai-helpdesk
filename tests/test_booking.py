@@ -4,9 +4,10 @@
 「現在」固定在台灣 2026-10-06(二)12:00 —— 週一公休、14 天範圍的邊界都看得到。
 """
 
+import re
 import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -150,6 +151,63 @@ def test_the_weekday_line_marks_today_even_when_it_is_closed():
 def test_the_clinic_weekday_line_marks_its_own_closed_day():
     p = booking.booking_prompt(CLINIC, today=date(2026, 10, 6), contact=CONTACT)
     assert "週日→2026-10-11(公休)" in p and "週一→2026-10-12(公休)" not in p
+
+
+NEXT_WEEK_HEAD = "客人說「下週」「下禮拜」時,用這一行(下週一到下週日):"
+
+
+def _line(p, head):
+    (line,) = [ln for ln in p.splitlines() if ln.startswith(head)]
+    return line
+
+
+def test_the_prompt_lists_next_week_monday_to_sunday_on_its_own_line():
+    """「下週五」= 這一週(週一到週日)之後那一週的週五。今天 10/15(四):下週是 10/19~10/25,
+    下週五是 10/23 —— 不是最近的週五 10/16。沒有這一行,模型只看得到「最近的那一天」。"""
+    p = booking.booking_prompt(RESTAURANT, today=date(2026, 10, 15), contact=CONTACT)
+    line = (NEXT_WEEK_HEAD + "週一→2026-10-19(公休)、週二→2026-10-20、週三→2026-10-21、"
+            "週四→2026-10-22、週五→2026-10-23、週六→2026-10-24、週日→2026-10-25")
+    assert line in p.splitlines()
+    assert "週五→2026-10-16" in _line(p, "客人只說星期幾時")   # 最近的那行照舊
+    assert p.index("客人只說星期幾時") < p.index(NEXT_WEEK_HEAD) < p.index("可以訂位的日期對照")
+    assert "- 客人說「下週X」「下禮拜X」時,用下週那一行的日期;確認時把日期講出來。" in p
+
+
+def test_next_week_is_the_same_week_on_a_saturday():
+    """今天 10/17(六):這一週是 10/12~10/18,下週一樣是 10/19~10/25,下週五還是 10/23
+    (剛好也是最近的週五)。"""
+    p = booking.booking_prompt(RESTAURANT, today=date(2026, 10, 17), contact=CONTACT)
+    assert "週五→2026-10-23" in _line(p, NEXT_WEEK_HEAD)
+    assert _line(p, NEXT_WEEK_HEAD).startswith(NEXT_WEEK_HEAD + "週一→2026-10-19(公休)、")
+
+
+def test_next_week_days_past_the_booking_range_are_marked():
+    short = {**RESTAURANT, "advance_days": 5}   # 10/15 起 5 天:最後一天是 10/20(二)
+    line = _line(booking.booking_prompt(short, today=date(2026, 10, 15), contact=CONTACT),
+                 NEXT_WEEK_HEAD)
+    assert "週一→2026-10-19(公休)、週二→2026-10-20、週三→2026-10-21(超出可訂位範圍)" in line
+    clinic = {**CLINIC, "advance_days": 7}      # 診所週日公休,10/25 也超出範圍:兩個都標
+    line = _line(booking.booking_prompt(clinic, today=date(2026, 10, 15), contact=CONTACT),
+                 NEXT_WEEK_HEAD)
+    assert line.endswith("週日→2026-10-25(公休)(超出可預約範圍)")
+    assert "週四→2026-10-22、" in line   # 10/22 是最後一天,還在範圍內
+
+
+def test_the_prompt_lines_and_the_mismatch_error_name_the_same_dates():
+    """「最近的那天」「下週那天」prompt 與錯誤訊息各用一次:兩邊各算一份的話,哪天改了一邊,
+    模型會在 prompt 看到一個日期、被工具指到另一個日期。一週七天每一天都對一次。"""
+    for offset in range(7):
+        today = date(2026, 10, 12 + offset)
+        now = datetime(today.year, today.month, today.day, 4, 0, tzinfo=timezone.utc)
+        p = booking.booking_prompt(RESTAURANT, today=today, contact=CONTACT)
+        pattern = r"週(.)→(\d{4}-\d{2}-\d{2})"
+        nearest = dict(re.findall(pattern, _line(p, "客人只說星期幾時")))
+        next_week = dict(re.findall(pattern, _line(p, NEXT_WEEK_HEAD)))
+        for w in booking.WEEKDAYS:
+            wrong_day = date.fromisoformat(nearest[w]) + timedelta(days=1)
+            _, error = booking._parse_date(RESTAURANT, wrong_day.isoformat(), w, now)
+            assert f"最近的週{w}是 {nearest[w]};" in error
+            assert f"如果客人說的是下週{w},是 {next_week[w]};" in error
 
 
 def test_the_prompt_tells_the_model_to_fill_the_weekday_and_to_fix_a_mismatch_from_what_was_said():
@@ -316,9 +374,10 @@ def test_two_simultaneous_calls_from_the_same_customer_book_once(ids, monkeypatc
     assert sorted(bool(r.get("duplicate")) for r in results) == [False, True]
 
 
-# --- 星期防線:日期對不對由程式保證,不靠模型 ------------------------------------
+# --- 星期防線:日期與星期是否一致由程式檢查,不靠模型 ----------------------------
 
 MISMATCH = ("2026-10-10 是週六,不是週五。如果客人說的是週五,從今天起最近的週五是 2026-10-09;"
+            "如果客人說的是下週五,是 2026-10-16;"
             "如果客人說的是 10/10,weekday 請填「六」。")
 
 
@@ -391,6 +450,35 @@ def test_the_nearest_weekday_is_counted_from_the_taipei_date(ids):
     error = _check(ids, {"date": "2026-10-09", "weekday": "二", "party_size": 2},
                    now=late)["error"]
     assert "最近的週二是 2026-10-13;" in error
+
+
+THURSDAY = datetime(2026, 10, 15, 4, 0, tzinfo=timezone.utc)   # 台灣 10/15(四)12:00
+
+
+def test_the_mismatch_error_also_names_next_weeks_date(ids):
+    """客人說「下週五」、模型卻填了別天:錯誤只給最近的週五(10/16)的話,會把模型導到這週。
+    下週 = 這一週(週一到週日)之後那一週,今天 10/15(四)時下週五是 10/23。"""
+    error = _check(ids, {"date": "2026-10-24", "weekday": "五", "party_size": 2},
+                   now=THURSDAY)["error"]
+    assert error == ("2026-10-24 是週六,不是週五。如果客人說的是週五,從今天起最近的週五是 2026-10-16;"
+                     "如果客人說的是下週五,是 2026-10-23;"
+                     "如果客人說的是 10/24,weekday 請填「六」。")
+
+
+def test_next_week_counts_from_the_calendar_week_not_from_seven_days_later(ids):
+    """今天 10/17(六):最近的週五與下週五都是 10/23 —— 下週是 10/19~10/25 那一週。"""
+    saturday = datetime(2026, 10, 17, 4, 0, tzinfo=timezone.utc)
+    error = _create(ids, {**OK_ARGS, "date": "2026-10-24"}, now=saturday)["error"]
+    assert "最近的週五是 2026-10-23;" in error and "下週五,是 2026-10-23;" in error
+
+
+def test_next_week_is_counted_from_the_taipei_date(ids):
+    """UTC 10/18(日)17:00 是台灣 10/19(一):這一週已經換成 10/19~10/25,下週一是 10/26。
+    用 UTC 日期算的話會說成 10/19。"""
+    late = datetime(2026, 10, 18, 17, 0, tzinfo=timezone.utc)
+    error = _check(ids, {"date": "2026-10-20", "weekday": "一", "party_size": 2},
+                   now=late)["error"]
+    assert "下週一,是 2026-10-26;" in error
 
 
 def test_the_clinic_checks_the_weekday_too(ids):

@@ -40,6 +40,21 @@ def _md(d: date) -> str:
     return f"{d.month:02d}/{d.day:02d}"
 
 
+# 「最近的週X」與「下週X」prompt 那兩行和星期不符的錯誤都用這兩個函式:兩邊各算一份的話,
+# 哪天改了一邊,模型會在 prompt 看到一個日期、被工具指到另一個日期。
+
+def _nearest(today: date, weekday: str) -> date:
+    """從今天起(含今天)最近的週X。"""
+    return today + timedelta(days=(WEEKDAYS.index(weekday) - today.weekday()) % 7)
+
+
+def _next_week(today: date, weekday: str) -> date:
+    """下週X = 這一週(週一到週日)之後那一週的週X,不是「最近的週X 再加 7 天」。
+    今天 10/15(四)或 10/17(六),下週五都是 10/23。"""
+    next_monday = today + timedelta(days=7 - today.weekday())
+    return next_monday + timedelta(days=WEEKDAYS.index(weekday))
+
+
 def _norm_weekday(raw) -> str | None:
     """把模型填的 weekday 收成 WEEKDAYS 裡的一個字,認不得就回 None。
 
@@ -71,7 +86,7 @@ def build_tools(config: dict) -> list[dict]:
     """由 booking_config 產生兩個工具:換行業時自動跟著變,跟轉真人工具同一套做法。"""
     label = config["label"]
     date_param = {"type": "string", "description": "YYYY-MM-DD,照日期對照表換算"}
-    # 日期對不對由程式保證:關掉思考後,模型不查表、自己心算,會把「週五」訂成週六。
+    # 日期與星期是否一致由程式檢查:關掉思考後,模型不查表、自己心算,會把「週五」訂成週六。
     # 要它同時交代「那天是星期幾」,程式拿來跟日期對 —— 兩邊對不上就擋(_parse_date)。
     weekday_param = {"type": "string", "enum": list(WEEKDAYS),
                      "description": "那天是星期幾:客人說星期幾就填那個;客人只給日期就照日期對照表查"}
@@ -111,18 +126,25 @@ def booking_prompt(config: dict, *, today: date, contact: str | None) -> str:
     日期對照表是實測的教訓:讓模型自己從「今天星期幾」推算「週五」會算錯,
     給它一張表照著查就不會。但關掉思考後它連表都不查,所以另外多一行「星期→日期」
     直接查(一個映射、不必在 15 天裡數),工具那邊再用 weekday 擋最後一道。
+    「下週五」另給一行(下週一到下週日):只有「最近」那行可查的話,模型會被帶到這週。
     """
     label = config["label"]
     open_days = set(config["days"])
+    last = today + timedelta(days=config["advance_days"])
     span = (today + timedelta(days=n) for n in range(config["advance_days"] + 1))
     table = "、".join(
         f"{d.isoformat()}({_weekday(d)}{'' if _weekday(d) in open_days else ',公休'})"
         for d in span)
-    # 從今天起連續 7 天剛好每個星期各一次,就是「最近的那一天」
+    # 每個星期各取最近的那天、依日期排:今天排第一,跟對照表同一個方向
     nearest = "、".join(
         f"週{_weekday(d)}→{d.isoformat()}" + ("(今天)" if d == today else "")
         + ("" if _weekday(d) in open_days else "(公休)")
-        for d in (today + timedelta(days=n) for n in range(7)))
+        for d in sorted(_nearest(today, w) for w in WEEKDAYS))
+    # 下週可能超出可預約的天數:標出來,模型才不會照這行去查、再被工具擋一次
+    next_week = "、".join(
+        f"週{_weekday(d)}→{d.isoformat()}" + ("" if _weekday(d) in open_days else "(公休)")
+        + (f"(超出可{label}範圍)" if d > last else "")
+        for d in (_next_week(today, w) for w in WEEKDAYS))
     needs = ["日期", "時段"]
     if _asks_party(config):
         needs.append("人數")
@@ -132,10 +154,12 @@ def booking_prompt(config: dict, *, today: date, contact: str | None) -> str:
         f"## {label}",
         f"今天是 {today.isoformat()}({_weekday(today)}),時區是台灣。",
         f"客人只說星期幾時,直接用這一行(從今天起最近的那一天):{nearest}",
+        f"客人說「下週」「下禮拜」時,用這一行(下週一到下週日):{next_week}",
         f"可以{label}的日期對照(換算日期一律照這張表,不要自己推算):{table}",
         f"時段:{'、'.join(config['times'])}。",
         "- 客人只說星期幾(例如「週五」)而沒有特別說明時,就是從今天起算最近的那一天,"
         "不要反問是哪一週。",
+        "- 客人說「下週X」「下禮拜X」時,用下週那一行的日期;確認時把日期講出來。",
         f"- 建立{label}前一定要先用 {CHECK_TOOL} 查空位,依查詢結果回答;不可以自己編造空位。",
         f"- 呼叫 {CHECK_TOOL}、{CREATE_TOOL} 時,weekday 填客人說的星期幾;"
         "客人只給日期時,照對照表查那天是星期幾再填。",
@@ -167,12 +191,14 @@ def _parse_date(config: dict, raw, weekday, now: datetime) -> tuple[date | None,
         return None, "請一併提供那天是星期幾(一到日)"
     today = today_taipei(now)
     # 星期對不上要排在範圍與公休之前:日期本身就錯了,先講「公休」或「超出範圍」
-    # 會把模型帶偏到那個日期上。錯誤兩種讀法都講 —— 客人說的是星期,就改成最近的那天;
-    # 客人說的是日期,只是 weekday 填錯。不能一律「往最近的星期靠」,那會訂到客人沒說的日子。
+    # 會把模型帶偏到那個日期上。錯誤每種讀法都講 —— 客人說的是星期,就改成最近的那天;
+    # 說的是下週X,就是下週那天(只給最近的那天會把模型導到這週);說的是日期,只是
+    # weekday 填錯。不能一律「往最近的星期靠」,那會訂到客人沒說的日子。
     if _weekday(d) != given:
-        nearest = today + timedelta(days=(WEEKDAYS.index(given) - today.weekday()) % 7)
         return None, (f"{d.isoformat()} 是週{_weekday(d)},不是週{given}。"
-                      f"如果客人說的是週{given},從今天起最近的週{given}是 {nearest.isoformat()};"
+                      f"如果客人說的是週{given},"
+                      f"從今天起最近的週{given}是 {_nearest(today, given).isoformat()};"
+                      f"如果客人說的是下週{given},是 {_next_week(today, given).isoformat()};"
                       f"如果客人說的是 {_md(d)},weekday 請填「{_weekday(d)}」。")
     last = today + timedelta(days=config["advance_days"])
     if not today <= d <= last:
