@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     rate_limit_global_per_minute: int = Field(30, ge=0)
 
     # agent loop(設計見 docs/superpowers/specs/2026-10-06-booking-agent-design.md 第六節)。
-    # 最後一步帶工具規格、tool_choice 是 none(NVIDIA 例外:只給規格、不送 tool_choice);
+    # 最後一步跟前面一樣只給工具規格、不送 tool_choice;
     # 模型仍回工具呼叫時照樣執行、不再問模型(見 loop.py 檔頭)。
     # 45 秒是整個 loop 合計:LINE reply token 約一分鐘有效,留 15 秒給送出與備援。
     # llm_total_budget_seconds 保留給單次呼叫。

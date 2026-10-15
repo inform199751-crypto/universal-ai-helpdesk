@@ -35,8 +35,7 @@ class Script:
 
     def __call__(self, messages, *, tools=None, deadline=None, **kw):
         self.seen.append({"messages": [dict(m) for m in messages],
-                          "tools": tools, "deadline": deadline,
-                          "tool_choice": kw.get("tool_choice")})
+                          "tools": tools, "deadline": deadline, "kw": dict(kw)})
         if self.delay:
             time.sleep(self.delay)
         r = self.results.pop(0)
@@ -91,17 +90,18 @@ def test_a_handoff_wins_and_other_tools_in_the_same_reply_are_not_run():
     assert executed == [] and r.text is None and r.steps == 1
 
 
-def test_the_last_step_still_gets_the_tool_schemas_but_with_tool_choice_none():
-    """最後一步想逼模型用文字收尾,所以 tool_choice 是 none(會遵守的上游就改回文字)。
-    但規格一定要帶:NVIDIA 最後一步照樣呼叫 create_booking(它只拿到規格、不收 tool_choice,
-    由 complete() 逐家決定),沒有規格的話它看不到必填的 weekday、漏帶,日期防線擋下 →
-    客人收到 fallback(2026-10-15 真模型驗收)。"""
+def test_the_last_step_is_asked_exactly_like_the_others():
+    """最後一步跟前面一樣只給工具規格、不帶 tool_choice。規格一定要帶:模型最後一步照樣會呼叫
+    create_booking,看不到規格就漏帶必填的 weekday,日期防線擋下 → 客人收到 fallback
+    (2026-10-15 真模型驗收)。tool_choice none 不送:NVIDIA 收到時 3 次裡 2 次漏 weekday
+    (只給規格 3/3 齊全);OpenRouter 收到 none 的那次照樣回 create_booking,沒觀察到被遵守過,
+    真的遵守時反而讓資料齊全的訂位成立不了。"""
     s = Script(_tools(_call("check_availability")),
                _tools(_call("check_availability", call_id="c2")),
                _text("請問要哪個時段?"))
     r = _run(s, lambda n, a: {"slots": []}, max_steps=3)
     assert [c["tools"] for c in s.seen] == [TOOLS, TOOLS, TOOLS]
-    assert [c["tool_choice"] for c in s.seen] == [None, None, "none"]
+    assert [c["kw"] for c in s.seen] == [{}, {}, {}]   # 沒有 tool_choice(也沒有別的參數)
     assert (r.text, r.steps) == ("請問要哪個時段?", 3)
 
 
@@ -124,7 +124,7 @@ def test_tool_calls_on_the_last_step_still_run_but_the_model_is_not_asked_again(
     assert r.steps == 2
     assert r.tools_used == ("check_availability", "create_booking")
     assert len(s.seen) == 2  # 沒有第三次呼叫模型
-    assert s.seen[1]["tools"] == TOOLS and s.seen[1]["tool_choice"] == "none"
+    assert s.seen[1]["tools"] == TOOLS and "tool_choice" not in s.seen[1]["kw"]
 
 
 def test_a_handoff_on_the_last_step_still_wins():
@@ -288,17 +288,8 @@ def test_a_result_that_only_fills_tool_call_still_counts_as_a_tool_call():
 
 
 def test_no_tools_means_tools_is_none_on_every_step():
-    s = Script(_text("好"))
-    _run(s, tools=None)
-    assert s.seen[0]["tools"] is None
-    assert s.seen[0]["tool_choice"] is None
-
-
-def test_without_tools_the_last_step_sends_no_tool_choice_either():
-    """tool_choice 只有跟著工具規格才有意義:沒有工具(或空清單)時,最後一步照樣是 tools=None、
-    不帶 tool_choice —— 上游收到沒有 tools 的 tool_choice 會回 400。"""
-    for no_tools in (None, []):
-        s = Script(_tools(_call("check_availability")), _text("好"))
-        _run(s, tools=no_tools, max_steps=2)
-        assert s.seen[-1]["tools"] is None
-        assert [c["tool_choice"] for c in s.seen] == [None, None]
+    """沒有工具時每一步(含最後一步)都是 tools=None,也不帶 tool_choice。"""
+    s = Script(_tools(_call("check_availability")), _text("好"))
+    _run(s, tools=None, max_steps=2)
+    assert [c["tools"] for c in s.seen] == [None, None]
+    assert [c["kw"] for c in s.seen] == [{}, {}]

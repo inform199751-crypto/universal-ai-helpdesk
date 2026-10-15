@@ -305,41 +305,25 @@ def test_tools_are_sent_upstream_only_when_given():
     assert seen[1]["tools"] == [TOOL]
 
 
-def test_tool_choice_is_sent_with_the_tools_when_given():
-    """agent loop 最後一步要送 tool_choice: none,想逼模型用文字收尾。"""
+def test_tool_choice_is_never_sent():
+    """tool_choice 一律不送,也沒有參數可以送(agent loop 最後一步跟其他步一樣只給規格):
+    NVIDIA 收到 none 時 3 次裡 2 次漏掉必填的 weekday(只給規格 3/3 齊全);OpenRouter 收到 none
+    的那次照樣回 create_booking,沒觀察到被遵守過,真的遵守時反而讓資料齊全的訂位成立不了。"""
+    import inspect
+
+    from app.agent.llm import _complete_once
     seen = []
 
     def handler(request):
         seen.append(_json.loads(request.content))
         return _ok()
 
-    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], tool_choice="none",
-             client=_http(handler))
-    assert seen[0]["tool_choice"] == "none"
-    assert seen[0]["tools"] == [TOOL]   # 規格照樣帶:模型看不到規格會漏掉必填欄位
-
-
-def test_tool_choice_is_left_out_when_not_given():
-    seen = []
-
-    def handler(request):
-        seen.append(_json.loads(request.content))
-        return _ok()
-
+    complete([{"role": "user", "content": "嗨"}], client=_http(handler))
     complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(handler))
-    assert "tool_choice" not in seen[0]
-
-
-def test_tool_choice_without_tools_is_not_sent():
-    """上游收到沒有 tools 的 tool_choice 會當成錯誤 —— 沒有工具就一個都不送。"""
-    seen = []
-
-    def handler(request):
-        seen.append(_json.loads(request.content))
-        return _ok()
-
-    complete([{"role": "user", "content": "嗨"}], tool_choice="none", client=_http(handler))
-    assert "tools" not in seen[0] and "tool_choice" not in seen[0]
+    assert ["tool_choice" in body for body in seen] == [False, False]
+    assert seen[1]["tools"] == [TOOL]
+    for fn in (complete, _complete_once):
+        assert "tool_choice" not in inspect.signature(fn).parameters
 
 
 def test_text_and_a_tool_call_are_both_returned():
@@ -506,44 +490,14 @@ def test_thinking_is_off_by_default_for_nvidia(two_providers):
     assert bodies[0]["reasoning"] == {"exclude": True}  # 既有的參數照舊
 
 
-def test_nvidia_never_gets_tool_choice_but_still_gets_the_tool_schemas(two_providers):
-    """2026-10-15 實測(NVIDIA super,最後一步):只送 tools、不送 tool_choice → create_booking 的
-    參數 3/3 齊全;送 tools + tool_choice "none" → 3 次裡 2 次漏 weekday、party_size 變成字串 "4"
-    (vLLM 似乎在 tool_choice none 時拿掉規格,卻照樣吐工具呼叫)。所以 NVIDIA 一律不送 tool_choice。"""
+def test_both_upstreams_get_the_tool_schemas_and_neither_gets_tool_choice(two_providers):
+    """NVIDIA 失敗退到 OpenRouter 時,兩家拿到的工具參數一樣:規格照帶、沒有 tool_choice。"""
     bodies = []
-    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], tool_choice="none",
-             client=_http(_body_recorder(bodies, {"nv/super": _ok})))
-    assert [b["model"] for b in bodies] == ["nv/super"]
-    assert "tool_choice" not in bodies[0]
-    assert bodies[0]["tools"] == [TOOL]
-
-
-def test_the_openrouter_fallback_still_gets_tool_choice_none(two_providers):
-    """每一步各自走 NVIDIA → OpenRouter 的備援:OpenRouter 收得了 tool_choice "none"(真模型驗收
-    照樣訂成功),所以 NVIDIA 失敗退到它的時候,規格與 tool_choice 都要帶。"""
-    bodies = []
-    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], tool_choice="none",
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
              client=_http(_body_recorder(bodies, {"nv/super": _overloaded, "or/free": _ok})))
     assert [b["model"] for b in bodies] == ["nv/super", "or/free"]
-    assert "tool_choice" not in bodies[0]
-    assert bodies[1]["tool_choice"] == "none"
     assert [b["tools"] for b in bodies] == [[TOOL], [TOOL]]
-
-
-def test_only_the_nvidia_endpoint_drops_tool_choice(monkeypatch):
-    """上面的測試用的是替身設定;「誰不收 tool_choice」是 _endpoints 寫死的,用真的 Settings 驗。"""
-    from app.agent.llm import _endpoints
-    from app.config import Settings
-    with_key = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k",
-                        nvidia_api_key="nvapi-x")
-    assert [(e.provider, e.drop_tool_choice) for e in _endpoints(with_key)] == [
-        ("NVIDIA", True), ("OpenRouter", False)]
-    without_key = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k",
-                           nvidia_api_key="")
-    endpoints = _endpoints(without_key)
-    assert len(endpoints) == 2
-    assert [(e.provider, e.drop_tool_choice) for e in endpoints] == [
-        ("OpenRouter", False), ("OpenRouter", False)]
+    assert ["tool_choice" in b for b in bodies] == [False, False]
 
 
 def test_nvidia_only_parameters_are_not_sent_to_openrouter(two_providers):
