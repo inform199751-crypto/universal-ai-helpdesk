@@ -506,14 +506,44 @@ def test_thinking_is_off_by_default_for_nvidia(two_providers):
     assert bodies[0]["reasoning"] == {"exclude": True}  # 既有的參數照舊
 
 
-def test_the_fallback_upstream_gets_the_same_tool_choice(two_providers):
-    """每一步各自走 NVIDIA → OpenRouter 的備援:最後一步轉到備援時,規格與 tool_choice 一樣要帶。"""
+def test_nvidia_never_gets_tool_choice_but_still_gets_the_tool_schemas(two_providers):
+    """2026-10-15 實測(NVIDIA super,最後一步):只送 tools、不送 tool_choice → create_booking 的
+    參數 3/3 齊全;送 tools + tool_choice "none" → 3 次裡 2 次漏 weekday、party_size 變成字串 "4"
+    (vLLM 似乎在 tool_choice none 時拿掉規格,卻照樣吐工具呼叫)。所以 NVIDIA 一律不送 tool_choice。"""
+    bodies = []
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], tool_choice="none",
+             client=_http(_body_recorder(bodies, {"nv/super": _ok})))
+    assert [b["model"] for b in bodies] == ["nv/super"]
+    assert "tool_choice" not in bodies[0]
+    assert bodies[0]["tools"] == [TOOL]
+
+
+def test_the_openrouter_fallback_still_gets_tool_choice_none(two_providers):
+    """每一步各自走 NVIDIA → OpenRouter 的備援:OpenRouter 收得了 tool_choice "none"(真模型驗收
+    照樣訂成功),所以 NVIDIA 失敗退到它的時候,規格與 tool_choice 都要帶。"""
     bodies = []
     complete([{"role": "user", "content": "嗨"}], tools=[TOOL], tool_choice="none",
              client=_http(_body_recorder(bodies, {"nv/super": _overloaded, "or/free": _ok})))
     assert [b["model"] for b in bodies] == ["nv/super", "or/free"]
-    assert [b["tool_choice"] for b in bodies] == ["none", "none"]
+    assert "tool_choice" not in bodies[0]
+    assert bodies[1]["tool_choice"] == "none"
     assert [b["tools"] for b in bodies] == [[TOOL], [TOOL]]
+
+
+def test_only_the_nvidia_endpoint_drops_tool_choice(monkeypatch):
+    """上面的測試用的是替身設定;「誰不收 tool_choice」是 _endpoints 寫死的,用真的 Settings 驗。"""
+    from app.agent.llm import _endpoints
+    from app.config import Settings
+    with_key = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k",
+                        nvidia_api_key="nvapi-x")
+    assert [(e.provider, e.drop_tool_choice) for e in _endpoints(with_key)] == [
+        ("NVIDIA", True), ("OpenRouter", False)]
+    without_key = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k",
+                           nvidia_api_key="")
+    endpoints = _endpoints(without_key)
+    assert len(endpoints) == 2
+    assert [(e.provider, e.drop_tool_choice) for e in endpoints] == [
+        ("OpenRouter", False), ("OpenRouter", False)]
 
 
 def test_nvidia_only_parameters_are_not_sent_to_openrouter(two_providers):

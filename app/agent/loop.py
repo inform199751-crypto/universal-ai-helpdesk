@@ -1,11 +1,14 @@
 """agent loop:模型呼叫工具 → 程式執行 → 結果放回對話 → 模型再決定下一步。
 
 設計見 docs/superpowers/specs/2026-10-06-booking-agent-design.md 第六節。
-- 最多 max_steps 步;最後一步帶工具規格、但 tool_choice 是 none,想讓模型改用文字收尾,
+- 最多 max_steps 步;最後一步帶工具規格、tool_choice 是 none,想讓模型改用文字收尾,
   不會繞圈到什麼都沒回。規格一定要帶:NVIDIA 會忽略 tool_choice、照樣回工具呼叫
   (2026-10-08,不帶工具、tool_choice none、關思考各 3/3),而沒有規格時它看不到必填的
   weekday、漏帶,日期防線擋下 → 客人收到 fallback(2026-10-15 真模型驗收)。
-  所以回來的工具呼叫照樣執行、不再問模型;同時回的文字丟掉(那是在工具結果出來之前寫的,
+  tool_choice 是由 complete() 逐家決定要不要送:OpenRouter 收得了 none;NVIDIA 一律不送
+  (送了它似乎會把規格拿掉:只送 tools 參數 3/3 齊全,加 none 變 1/3,見 llm.py 的
+  _Endpoint.drop_tool_choice),所以 NVIDIA 在最後一步只拿到規格。
+  回來的工具呼叫照樣執行、不再問模型;同時回的文字丟掉(那是在工具結果出來之前寫的,
   可能只是客套話、也可能謊稱已訂位),回覆由 webhook 補(有成立預約 → 程式確認句,
   沒有 → fallback)。會遵守 tool_choice 的上游則會改回文字
 - 所有步驟共用一個截止時間:每一步拿的是剩下的時間,不是每步各一份
@@ -87,6 +90,7 @@ def run_agent(messages: list[dict], *, tools: list[dict] | None,
             step_args: dict = {"tools": tools}
         elif tools:
             # 最後一步也給規格(見檔頭),tool_choice none 是請上游改回文字
+            # (NVIDIA 那家 complete() 會自己把 tool_choice 丟掉)
             step_args = {"tools": tools, "tool_choice": "none"}
         else:
             step_args = {"tools": None}   # 沒有工具就沒有 tool_choice 可言

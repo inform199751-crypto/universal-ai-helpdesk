@@ -72,6 +72,12 @@ class _Endpoint:
     # 各家上游自己的額外參數(例如 NVIDIA 的 chat_template_kwargs),跟網址、key 一起走 ——
     # 另一家不認得的參數會被拒絕或被無視,不該被帶過去。
     extra_body: dict = field(default_factory=dict)
+    # 這家上游一律不送 tool_choice。2026-10-15 實測 NVIDIA super(最後一步,前一步的
+    # check_availability 帶 weekday "五"):只送 tools、不送 tool_choice → create_booking 的參數
+    # 3/3 齊全;送 tools + tool_choice "none" → 3 次裡 2 次漏掉 weekday、party_size 變成字串 "4"。
+    # NVIDIA(vLLM)似乎在 tool_choice 是 none 時把規格拿掉,卻照樣吐工具呼叫 —— 等於又回到
+    # 「沒有規格」。OpenRouter 收 "none" 沒問題(同一次驗收照樣訂成功),所以只有 NVIDIA 要丟掉。
+    drop_tool_choice: bool = False
 
 
 def _endpoints(s) -> list[_Endpoint]:
@@ -90,7 +96,7 @@ def _endpoints(s) -> list[_Endpoint]:
         thinking = {"chat_template_kwargs": {
             "enable_thinking": getattr(s, "nvidia_enable_thinking", False)}}
         return [_Endpoint("NVIDIA", s.nvidia_base_url, s.nvidia_api_key, s.nvidia_model,
-                          extra_body=thinking),
+                          extra_body=thinking, drop_tool_choice=True),
                 openrouter(s.openrouter_model)]
     endpoints = [openrouter(s.openrouter_model)]
     fallback = getattr(s, "openrouter_fallback_model", None)
@@ -136,8 +142,9 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
     }
     if tools:
         payload["tools"] = tools
-        # 只跟著工具規格一起送:沒有 tools 的 tool_choice 上游會當成錯誤
-        if tool_choice is not None:
+        # 只跟著工具規格一起送(沒有 tools 的 tool_choice 上游會當成錯誤),
+        # 而且 NVIDIA 不送(見 _Endpoint.drop_tool_choice)
+        if tool_choice is not None and not endpoint.drop_tool_choice:
             payload["tool_choice"] = tool_choice
     payload.update(endpoint.extra_body)
     started = time.monotonic()
@@ -210,7 +217,8 @@ def complete(messages: list[dict], *, tools: list[dict] | None = None,
     所有上游合計受 llm_total_budget_seconds 限制,不會越過 LINE reply token
     的一分鐘效期。回傳的 latency_ms 也是合計的 —— 客人實際等了多久。
     deadline(time.monotonic() 的秒數)有傳就用它 —— agent loop 每一步拿的是剩下的時間。
-    tool_choice(例如 "none")有給、而且有 tools 時才送;備援上游也照樣送同一個。
+    tool_choice(例如 "none")有給、而且有 tools 時才送;OpenRouter 的上游照送,NVIDIA 不送
+    (送了它似乎會把規格拿掉,見 _Endpoint.drop_tool_choice)。
     """
     s = get_settings()
     endpoints = _endpoints(s)
