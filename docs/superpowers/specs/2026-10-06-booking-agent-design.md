@@ -40,6 +40,7 @@
 | 9 | 全站上限 | 維持每分鐘 30 則 | 多數訊息仍是 FAQ(1 步);平均約 1.2–1.5 次呼叫/則 ≈ 每分鐘 40 次。最壞情況 NVIDIA 429 → OpenRouter 接手,失敗形狀與以前相同。log 記步數,實際偏高再調 |
 | 10 | 存什麼進對話紀錄 | 只存客人訊息與最後的文字回答,不存中間的工具呼叫 | 建立預約時程式會再查一次名額,模型不需要看到上一則的工具結果 |
 | 11 | PR 規模 | 一個 PR | loop 單獨上線看不出任何差異,沒辦法獨立驗收 |
+| 12 | 日期正確 | 兩個工具都多一個必填的 `weekday`,程式拿它跟日期對,對不上就擋;錯誤同時講兩種讀法(客人說的是星期 → 最近的那天;客人說的是日期 → `weekday` 填錯) | 2026-10-08 關掉思考後,模型不查對照表、自己心算,3 次裡 2 次把「週五」訂成週六。prompt 再清楚也只是請模型小心,程式驗證才算數。不能一律「往最近的星期靠」:客人說的若是日期,那會訂到客人沒說的日子,所以兩種讀法都交給模型照客人說的那個改正 |
 
 ### 2026-10-06 實測(NVIDIA `nemotron-3-super-120b-a12b`,假工具,共 13 段對話)
 
@@ -56,6 +57,7 @@
 |---|---|---|
 | 客人只說「我想訂位」(開放式問題),開著思考 | 5 次裡 3 次把 `max_tokens`(1200)全拿去思考、`finish_reason=length`、content 是空的(11~37 秒)→ `LLMError("拿不到內容")` → 客人收到 fallback;沒有預約說明的線上版 5/5 約 1.5 秒 | 送 `chat_template_kwargs.enable_thinking=false` 後 5/5 在 0.9~3 秒內正常回答 → `nvidia_enable_thinking = False` |
 | 最後一步,對話裡已有 assistant `tool_calls` 與 `role: tool` | 不帶 `tools`:3/3 照樣回 `create_booking`;帶 `tools` + `tool_choice: none`:3/3 一樣;關思考:3/3 一樣 | loop 最後一步仍不給工具,但回來的工具呼叫照樣執行、不再問模型;同時回的文字丟掉 |
+| 關掉思考後,「分四句」說週五(實測當天是週四) | 3 次裡 2 次訂成 2026-10-10(週六):模型不查日期對照表、自己心算「今天週四 → 週五是 10/10」;`check_availability` 回了 `"weekday": "六"` 也沒發現,最後還說「已訂好 10/10 星期六」。開著思考 3/3 正確,但開思考會讓開放式問題想到沒答案 | 思考維持關閉;工具加必填 `weekday`、程式擋星期不符(§五);prompt 加「星期→日期」直接查的一行 |
 
 ## 三、整體流程
 
@@ -152,26 +154,33 @@ fields:
 
 ### check_availability
 
-參數:`date`(YYYY-MM-DD);`party_size`(僅 `max_party > 1` 時)。
+參數:`date`(YYYY-MM-DD);`weekday`(必填,`一`~`日`:那天是星期幾);`party_size`(僅 `max_party > 1` 時)。
 回傳:`{date, weekday, open, slots: [{time, available}]}`;只回能不能訂,不回剩幾組。
-日期超出範圍、公休、人數超過上限時回傳 `{error: "<中文說明>"}`。
+星期不符或缺少 `weekday`、日期超出範圍、公休、人數超過上限時回傳 `{error: "<中文說明>"}`。
+日期與 `weekday` 的檢查和 `create_booking` 共用同一段(`_parse_date`),見下面第 1 項。
 
 ### create_booking
 
-參數:`date`、`time`、`name`、`phone`、`party_size`(僅 `max_party > 1`)、每個 `fields` 的 `key`(值為選項之一)。
+參數:`date`、`weekday`(必填,`一`~`日`)、`time`、`name`、`phone`、`party_size`(僅 `max_party > 1`)、每個 `fields` 的 `key`(值為選項之一)。
 
 依序檢查,第一個不通過的回傳 `{ok: false, error: "<中文說明>"}`:
 
-1. 日期在 `[今天, 今天 + advance_days]` 內,而且是 `days` 之一(台灣時間)
-2. 時段在 `times` 內;日期是今天時,時段要晚於現在
-3. 人數 1 ≤ n ≤ `max_party`;超過時錯誤訊息附上店家 `contact`
-4. 姓名去掉空白後非空、≤ 50 字
-5. 電話去掉 `-` 與空白後符合 `^0\d{8,9}$`
-6. 每個 `fields` 的值在 `options` 內
-7. **防重複**:先鎖住該公司的 `companies` 列(見第 8 點),再查同一位客人、同一天、同一時段是否已有 `confirmed`
+1. **日期格式與星期**(`check_availability` 同樣先過這一關):日期要是 YYYY-MM-DD;`weekday` 去掉「星期」「禮拜」「週」「周」
+   前綴(「天」視同「日」)後必須是「一」到「日」之一,缺少或無效 → 「請一併提供那天是星期幾(一到日)」。
+   **星期不符先擋**,排在日期範圍與公休之前:日期本身就錯了,先講「公休」或「超出範圍」會把模型帶偏到那個日期上。
+   錯誤**講兩種讀法**:「2026-10-10 是週六,不是週五。如果客人說的是週五,從今天起最近的週五是 2026-10-09;
+   如果客人說的是 10/10,weekday 請填「六」。」—— 客人說的是星期,就改成最近的那天(含今天,台灣時間);
+   客人說的是日期,只是 `weekday` 填錯。不能一律往最近的星期靠,那會訂到客人沒說的日子
+2. 日期在 `[今天, 今天 + advance_days]` 內,而且是 `days` 之一(台灣時間)
+3. 時段在 `times` 內;日期是今天時,時段要晚於現在
+4. 人數 1 ≤ n ≤ `max_party`;超過時錯誤訊息附上店家 `contact`
+5. 姓名去掉空白後非空、≤ 50 字
+6. 電話去掉 `-` 與空白後符合 `^0\d{8,9}$`
+7. 每個 `fields` 的值在 `options` 內
+8. **防重複**:先鎖住該公司的 `companies` 列(見第 9 點),再查同一位客人、同一天、同一時段是否已有 `confirmed`
    預約 → 有就直接回傳那筆(`{ok: true, duplicate: true, booking, note}`),不建立第二筆。`note` 寫明內容沒有更改、
    要修改或取消請客人直接聯繫 `contact` —— 客人想改人數或時間時,模型才不會把這個 `ok` 說成「已幫您改好」
-8. **名額**:在同一個鎖裡數該時段 `confirmed` 筆數,< `capacity` 才寫入。鎖(`SELECT … FOR NO KEY UPDATE`)排在
+9. **名額**:在同一個鎖裡數該時段 `confirmed` 筆數,< `capacity` 才寫入。鎖(`SELECT … FOR NO KEY UPDATE`)排在
    防重複之前:同一位客人同時送兩次、或兩個人搶最後一個名額,第二個請求都要等第一個 commit 完才看得到結果
    (PostgreSQL;SQLite 只用在開發與測試,不保證這件事)。`NO KEY` 就夠了,不會擋住其他資料表對 `companies` 的外鍵寫入
 
@@ -184,8 +193,13 @@ fields:
 只有 `booking_config` 不為 `None` 時,在 system prompt 後面接上(每次請求現算,不存資料庫):
 
 - 「今天是 2026-10-06(二),時區是台灣」
+- **「星期→日期」直接查的一行**(在對照表前面):從今天起連續 7 天、依日期順序,剛好每個星期各一次,
+  今天標「(今天)」、公休日標「(公休)」,例如「客人只說星期幾時,直接用這一行(從今天起最近的那一天):
+  週二→2026-10-06(今天)、週三→2026-10-07、…、週一→2026-10-12(公休)」。模型不必在 15 天的表裡數,也不必心算
 - 未來 `advance_days` 天的對照表,公休日標「公休」
 - 規則:「週五」沒有特別說明就是從今天起算最近的那一天(今天就是週五則指今天),不要反問;建立前一定要先查空位;
+  呼叫兩個工具時 `weekday` 填客人說的星期幾(客人只給日期就照對照表查);工具說日期和星期對不上時,回頭看客人
+  說的是星期幾還是日期,照客人說的那個改正後再查,不要自己猜;
   不可以自己編造空位;缺什麼一次問完;每筆最多 `max_party` 位,超過請客人聯繫 `contact`;
   已成立的預約不能在這裡修改或取消,客人要改人數(`max_party > 1` 時)、時間或取消,請他直接聯繫 `contact`
 
@@ -267,6 +281,8 @@ NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法
 - `app/cli.py`(seed 寫 `booking_config`;新指令 `bookings`)
 - `app/config.py`、`app/models/company.py`、`app/models/__init__.py`
 - 測試:`test_agent.py`、`test_webhook.py`、`test_validate.py`、`test_cli.py`、`test_alembic.py`、`test_industries.py`
+- `industries/restaurant/faq.yaml`、`industries/clinic/faq.yaml`、`industries/clinic/policies.yaml`:訂位、預約的答案改成
+  「可以直接在這裡預約,也可以來電」—— bot 能預約之後,「只能打電話」的舊答案跟功能矛盾,模型會照 FAQ 請客人打電話
 - 文件:`README.md`、`docs/report.md`、`docs/demo-checklist.md`、`industries/README.md`
 
 ## 十、測試策略
@@ -275,14 +291,17 @@ NVIDIA 在最後一步不帶工具、`tool_choice: none`、關思考三種做法
 
 - **`test_booking.py`**(真的資料庫):可預約範圍邊界、公休日、今天已過的時段、人數 0 / 上限 / 上限+1、
   電話格式(含 `-`、空白、市話、錯誤長度)、選項外的值、名額滿、防重複回傳既有那筆、`max_party: 1` 不收人數、
-  工具定義由設定產生(餐廳有 `party_size`、診所有 `service` 選項)、預約說明的日期對照表與公休標記(固定「今天」)
+  工具定義由設定產生(餐廳有 `party_size`、診所有 `service` 選項、兩個工具都必填 `weekday`)、預約說明的日期對照表與公休標記(固定「今天」)、
+  「星期→日期」那一行與兩條 weekday 規則;星期防線:對不上時 create 與 check 都擋(create 一筆都不建立)、錯誤講兩種讀法、
+  缺少或無效的 `weekday`、`週五`/`星期五`/`禮拜五`/`周五` 與「天」都接受、星期不符先於公休與日期範圍、
+  最近的那天含今天且用台灣日期算
 - **`test_agent_loop.py`**(假的模型回應序列):只回文字;查空位 → 建立 → 文字;轉真人優先且不執行其他工具;
   步數用完時最後一步沒有帶工具、但回來的工具呼叫照樣執行且不再問模型(轉真人優先;同時回的文字丟掉,成立與被拒絕各一條);**建立後超時 → 結果帶 `booking` 且沒有文字**;工具錯誤與例外回給模型;
   不存在的工具;每一步拿剩下的時間
 - **`test_agent.py`**:多個 tool_calls 都解析出來(含 id);`deadline` 取代預設上限;送 NVIDIA 的 body 預設帶
   `enable_thinking: false`(可由設定打開)、退回 OpenRouter 時不帶
 - **`test_webhook.py`**:整段訂位寫進 `bookings`;最後一步才回 `create_booking` 時客人只收到確認句(被拒絕則收到 fallback);對話紀錄只有 user + 最後文字;超時時送出程式組的確認句;建立後又轉真人時,轉真人的話前面接上確認句;
-  有 `staff_notify_to` 時推播;限流照樣在 loop 之前擋;沒有 `booking_config` 時工具清單沒有預約工具
+  有 `staff_notify_to` 時推播;模型填錯 weekday 時錯誤原文回給模型、改正後才成立;限流照樣在 loop 之前擋;沒有 `booking_config` 時工具清單沒有預約工具
 - **`test_validate.py`**:規則 11 的每一種 ERROR;規則 12 的 BLOCK;沒有 `booking.yaml` 不報錯
 - **`test_cli.py`**:seed 寫入 / 清空 `booking_config`;`bookings` 指令的篩選與排序
 - **`test_alembic.py`**:升級與降版
