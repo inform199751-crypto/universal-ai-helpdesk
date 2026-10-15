@@ -1095,7 +1095,7 @@ def test_when_the_model_fails_after_booking_only_the_confirmation_is_sent(
 
 
 def _walk_to_the_last_step(day, last):
-    """前面三步都在查空位,第四步(最後一步,不給工具)回 last。"""
+    """前面三步都在查空位,第四步(最後一步,帶工具規格但 tool_choice none)回 last。"""
     check = [_tool_calls(ToolCall("check_availability",
                                   {"date": day, "weekday": _wd(day), "party_size": 4}, id=f"c{i}"))
              for i in (1, 2, 3)]
@@ -1113,7 +1113,12 @@ def test_a_booking_the_model_asks_for_on_the_last_step_gets_only_the_confirmatio
                        tool_call=create, tool_calls=(create,))))
     with TestClient(app) as client:
         _post(client, _body(text="週五晚上 8 點 4 位,王小明 0912-345-678"))
-    assert len(calls) == 4 and calls[3]["tools"] is None   # 真的走到最後一步,而且沒給工具
+    # 真的走到最後一步:規格照帶(模型看不到規格會漏掉必填的 weekday),但 tool_choice 是 none
+    assert len(calls) == 4
+    assert {t["function"]["name"] for t in calls[3]["tools"]} >= {"check_availability",
+                                                                   "create_booking"}
+    assert calls[3]["tool_choice"] == "none"
+    assert [c.get("tool_choice") for c in calls[:3]] == [None, None, None]
     assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4)]
     with session_scope() as db:
         assert len(db.scalars(select(Booking)).all()) == 1

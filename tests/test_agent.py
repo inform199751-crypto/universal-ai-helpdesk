@@ -305,6 +305,43 @@ def test_tools_are_sent_upstream_only_when_given():
     assert seen[1]["tools"] == [TOOL]
 
 
+def test_tool_choice_is_sent_with_the_tools_when_given():
+    """agent loop 最後一步要送 tool_choice: none,想逼模型用文字收尾。"""
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content))
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], tool_choice="none",
+             client=_http(handler))
+    assert seen[0]["tool_choice"] == "none"
+    assert seen[0]["tools"] == [TOOL]   # 規格照樣帶:模型看不到規格會漏掉必填欄位
+
+
+def test_tool_choice_is_left_out_when_not_given():
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content))
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(handler))
+    assert "tool_choice" not in seen[0]
+
+
+def test_tool_choice_without_tools_is_not_sent():
+    """上游收到沒有 tools 的 tool_choice 會當成錯誤 —— 沒有工具就一個都不送。"""
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content))
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], tool_choice="none", client=_http(handler))
+    assert "tools" not in seen[0] and "tool_choice" not in seen[0]
+
+
 def test_text_and_a_tool_call_are_both_returned():
     """同時回了文字與工具呼叫時兩個都要交出去,由呼叫端決定 ——
     在這裡丟掉任何一個,webhook 就沒辦法實作「以工具為準」。"""
@@ -467,6 +504,16 @@ def test_thinking_is_off_by_default_for_nvidia(two_providers):
     assert [b["model"] for b in bodies] == ["nv/super"]
     assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
     assert bodies[0]["reasoning"] == {"exclude": True}  # 既有的參數照舊
+
+
+def test_the_fallback_upstream_gets_the_same_tool_choice(two_providers):
+    """每一步各自走 NVIDIA → OpenRouter 的備援:最後一步轉到備援時,規格與 tool_choice 一樣要帶。"""
+    bodies = []
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], tool_choice="none",
+             client=_http(_body_recorder(bodies, {"nv/super": _overloaded, "or/free": _ok})))
+    assert [b["model"] for b in bodies] == ["nv/super", "or/free"]
+    assert [b["tool_choice"] for b in bodies] == ["none", "none"]
+    assert [b["tools"] for b in bodies] == [[TOOL], [TOOL]]
 
 
 def test_nvidia_only_parameters_are_not_sent_to_openrouter(two_providers):

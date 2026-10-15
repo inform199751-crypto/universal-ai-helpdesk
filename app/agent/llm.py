@@ -125,7 +125,8 @@ def _parse_tool_calls(message: dict) -> tuple[ToolCall, ...]:
 
 
 def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint,
-                   s, deadline: float, tools: list[dict] | None = None) -> LLMResult:
+                   s, deadline: float, tools: list[dict] | None = None,
+                   tool_choice: str | None = None) -> LLMResult:
     model = endpoint.model
     payload = {
         "model": model,
@@ -135,6 +136,9 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
     }
     if tools:
         payload["tools"] = tools
+        # 只跟著工具規格一起送:沒有 tools 的 tool_choice 上游會當成錯誤
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
     payload.update(endpoint.extra_body)
     started = time.monotonic()
     try:
@@ -195,6 +199,7 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
 
 
 def complete(messages: list[dict], *, tools: list[dict] | None = None,
+             tool_choice: str | None = None,
              client: httpx.Client | None = None,
              deadline: float | None = None) -> LLMResult:
     """依序試每個上游(見 _endpoints),第一個答得出來的就用。
@@ -205,6 +210,7 @@ def complete(messages: list[dict], *, tools: list[dict] | None = None,
     所有上游合計受 llm_total_budget_seconds 限制,不會越過 LINE reply token
     的一分鐘效期。回傳的 latency_ms 也是合計的 —— 客人實際等了多久。
     deadline(time.monotonic() 的秒數)有傳就用它 —— agent loop 每一步拿的是剩下的時間。
+    tool_choice(例如 "none")有給、而且有 tools 時才送;備援上游也照樣送同一個。
     """
     s = get_settings()
     endpoints = _endpoints(s)
@@ -223,7 +229,8 @@ def complete(messages: list[dict], *, tools: list[dict] | None = None,
                 failures.append(f"{endpoint.model} → 沒時間試了")
                 break
             try:
-                result = _complete_once(http, messages, endpoint, s, deadline, tools)
+                result = _complete_once(http, messages, endpoint, s, deadline, tools,
+                                        tool_choice)
                 # 記客人實際等了多久,不是最後那個模型花了多久 —— 只記最後
                 # 一個的話,退回越常發生紀錄越偏低。
                 return replace(result, latency_ms=int((time.monotonic() - started) * 1000))
