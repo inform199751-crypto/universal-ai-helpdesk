@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     agent_max_steps: int = Field(4, ge=1)
     agent_total_budget_seconds: float = Field(45.0, gt=0)
 
+    # 轉真人分類層(設計見 docs/superpowers/specs/2026-10-16-handoff-classifier-design.md)。
+    # 關鍵字沒命中時,跟主模型同時發一個只看升級規則的短呼叫;線上出問題時設成 false
+    # 重啟就關掉,不用改程式。15 秒從送出算起:主模型先答完時最多再等到這裡,
+    # 最壞情況仍在 agent 的 45 秒內。
+    handoff_classifier_enabled: bool = True
+    handoff_classifier_budget_seconds: float = Field(15.0, gt=0)
+
     @field_validator("*", mode="before")
     @classmethod
     def _strip(cls, v):

@@ -46,3 +46,18 @@ def test_a_negative_rate_limit_is_rejected(field):
     """0 是「關閉」,負數沒有意義 —— 寫錯的設定要在開機時就爆,不是默默變成關閉。"""
     with pytest.raises(ValidationError):
         Settings(_env_file=None, fernet_key="k", openrouter_api_key="k", **{field: -1})
+
+
+def test_the_handoff_classifier_is_on_by_default_with_a_15_second_budget(monkeypatch):
+    # conftest 為了不讓既有測試碰網路把它關了;這裡驗的是 Settings 宣告的預設值
+    monkeypatch.delenv("HANDOFF_CLASSIFIER_ENABLED", raising=False)
+    monkeypatch.delenv("HANDOFF_CLASSIFIER_BUDGET_SECONDS", raising=False)
+    s = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k")
+    assert s.handoff_classifier_enabled is True
+    assert s.handoff_classifier_budget_seconds == 15.0
+
+
+def test_the_handoff_classifier_budget_must_be_positive():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, fernet_key="k", openrouter_api_key="k",
+                 handoff_classifier_budget_seconds=0)

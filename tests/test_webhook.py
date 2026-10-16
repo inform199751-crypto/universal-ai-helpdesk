@@ -1345,3 +1345,160 @@ def test_the_customer_is_answered_before_the_booking_push_even_when_handing_off(
     # 三條轉真人的路都要先告訴客人訂好了 —— 安全網那兩條少傳 prefix 也要抓得到
     assert line_out[0][1].startswith(_expected_confirmation(day, "20:00", 4))
     assert any("【新訂位】" in p[2] for p in _pushes(line_out))
+
+
+# --- 轉真人分類層(2026-10-16) -------------------------------------------------
+
+import time as _time  # noqa: E402
+
+from app.agent.handoff import Decision  # noqa: E402
+from app.config import get_settings  # noqa: E402
+
+CLS_SAFETY = Decision("safety", SAFETY_SCRIPT, "AI 分類層 —— safety")
+
+
+@pytest.fixture
+def classifier(monkeypatch):
+    """打開分類層(conftest 預設關掉)、換掉 classify。回傳 (設定回傳值的函式, 呼叫紀錄)。"""
+    monkeypatch.setattr(get_settings(), "handoff_classifier_enabled", True)
+    state = {"result": None, "exc": None}
+    calls = []
+
+    def fake(rules, text, **kw):
+        calls.append({"rules": rules, "text": text, **kw})
+        if state["exc"] is not None:
+            raise state["exc"]
+        return state["result"]
+
+    monkeypatch.setattr("app.routers.webhook.classify", fake)
+
+    def set_result(result=None, exc=None):
+        state["result"], state["exc"] = result, exc
+    return set_result, calls
+
+
+def test_the_classifier_transfers_when_the_model_only_answers(rules, line_out, monkeypatch,
+                                                                 classifier):
+    """這個分類層要修的失敗模式:模型自己寫「需要醫師當面評估」卻沒呼叫工具。"""
+    set_result, calls = classifier
+    set_result(CLS_SAFETY)
+    _llm(monkeypatch, LLMResult("這需要由醫師當面評估,建議停用後回診", token_count=1,
+                                latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="擦了藥膏整片紅腫,要繼續擦嗎"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]       # 模型臨場寫的那段丟掉
+    (_, to, text), = _pushes(line_out)
+    assert to == "Ustaff"
+    assert "【安全】" in text and "判斷依據:AI 分類層 —— safety" in text
+    assert _mode()[0] == ConversationMode.HUMAN
+    (call,) = calls
+    assert call["text"] == "擦了藥膏整片紅腫,要繼續擦嗎"
+    assert call["company_name"] == "測試公司"
+    assert call["rules"] == RULES
+
+
+def test_a_classifier_none_leaves_the_models_answer(rules, line_out, monkeypatch, classifier):
+    set_result, calls = classifier
+    set_result(None)
+    _llm(monkeypatch, LLMResult("禮拜六下午有看診", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="禮拜六下午有看診嗎"))
+    assert _replies(line_out) == ["禮拜六下午有看診"]
+    assert _pushes(line_out) == []
+    assert _mode()[0] == ConversationMode.AI
+    assert len(calls) == 1
+
+
+def test_a_classifier_crash_leaves_the_models_answer(rules, line_out, monkeypatch, classifier):
+    set_result, _ = classifier
+    set_result(exc=RuntimeError("boom"))
+    _llm(monkeypatch, LLMResult("您好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="你好"))
+    assert _replies(line_out) == ["您好"]
+    assert _mode()[0] == ConversationMode.AI
+
+
+def test_a_classifier_that_misses_its_deadline_is_ignored(rules, line_out, monkeypatch,
+                                                           classifier):
+    """主模型先答完時最多等到分類層的截止時間,過了就不等 —— 客人不能被它拖住。"""
+    set_result, _ = classifier
+    set_result(CLS_SAFETY)
+    monkeypatch.setattr(get_settings(), "handoff_classifier_budget_seconds", 0.05)
+    import app.routers.webhook as wh
+    fake = wh.classify
+
+    def slow(*a, **kw):
+        _time.sleep(0.5)
+        return fake(*a, **kw)
+    monkeypatch.setattr("app.routers.webhook.classify", slow)
+    _llm(monkeypatch, LLMResult("您好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="你好"))
+    assert _replies(line_out) == ["您好"]
+    assert _mode()[0] == ConversationMode.AI
+
+
+def test_the_models_own_tool_call_wins_over_the_classifier(rules, line_out, monkeypatch,
+                                                            classifier):
+    set_result, _ = classifier
+    set_result(Decision("money", "不該用到", "AI 分類層 —— money"))
+    _llm(monkeypatch, LLMResult("", token_count=1, latency_ms=1, tool_call=ToolCall(
+        "transfer_to_human", {"category": "safety", "reason": "疑似過敏"})))
+    with TestClient(app) as client:
+        _post(client, _body(text="我女兒吃完全身起紅疹"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    (_, _, text), = _pushes(line_out)
+    assert "判斷依據:AI —— 疑似過敏" in text
+
+
+def test_the_classifier_is_not_called_when_switched_off(rules, line_out, monkeypatch,
+                                                        classifier):
+    set_result, calls = classifier
+    set_result(CLS_SAFETY)
+    monkeypatch.setattr(get_settings(), "handoff_classifier_enabled", False)
+    _llm(monkeypatch, LLMResult("您好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="擦了藥膏整片紅腫"))
+    assert calls == []
+    assert _replies(line_out) == ["您好"]
+
+
+def test_the_classifier_is_not_called_on_a_keyword_hit(rules, line_out, monkeypatch,
+                                                       classifier):
+    _, calls = classifier
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="我朋友吃完過敏送醫了"))
+    assert calls == []
+    assert "判斷依據:關鍵字「過敏」" in _pushes(line_out)[0][2]
+
+
+def test_a_classifier_transfer_after_a_booking_still_confirms_the_booking(
+        bookable, rules, line_out, monkeypatch, classifier):
+    day = bookable
+    set_result, _ = classifier
+    set_result(CLS_SAFETY)
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             LLMResult("訂好了", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位,另外我小孩吃了藥起疹子"))
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4) + SAFETY_SCRIPT]
+    pushes = [p[2] for p in _pushes(line_out)]
+    assert any("【安全】" in p for p in pushes) and any("【新訂位】" in p for p in pushes)
+    assert _mode()[0] == ConversationMode.HUMAN
+
+
+def test_a_classifier_transfer_beats_the_fallback_when_the_model_fails(
+        rules, line_out, monkeypatch, classifier):
+    set_result, _ = classifier
+    set_result(CLS_SAFETY)
+
+    def boom(messages, **kw):
+        raise LLMError("全部失敗")
+    monkeypatch.setattr("app.routers.webhook.complete", boom)
+    with TestClient(app) as client:
+        _post(client, _body(text="擦了藥膏整片紅腫"))
+    assert _replies(line_out) == [SAFETY_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN

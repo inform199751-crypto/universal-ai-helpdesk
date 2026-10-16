@@ -10,12 +10,17 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.agent.classifier import classify
 from app.agent.handoff import (
     EXPIRED_PREFIX, RECITED_HISTORY_MARKER, Decision, build_tool, customer_label,
     decision_from_promised_transfer, decision_from_recited_script, decision_from_tool,
@@ -50,6 +55,46 @@ NON_TEXT_LABELS = {
 
 def _label(message_type: str) -> str:
     return NON_TEXT_LABELS.get(message_type, f"[{message_type or '未知訊息'}]")
+
+
+# 轉真人分類層跟主模型同時跑(設計見 docs/superpowers/specs/2026-10-16-handoff-classifier-design.md)。
+# process_text_event 本身已經在 BackgroundTasks 的 threadpool 裡,再開執行緒是安全的;
+# 共用一個池子,尖峰時不會無上限地開執行緒。
+_classifier_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="handoff-classifier")
+
+
+@dataclass(frozen=True)
+class _PendingClassifier:
+    future: Future
+    deadline: float  # time.monotonic() 的秒數;HTTP 與等待用同一個截止時間
+
+
+def _start_classifier(settings, rules: list[dict], text: str,
+                      company_name: str) -> _PendingClassifier | None:
+    if not settings.handoff_classifier_enabled:
+        return None
+    deadline = time.monotonic() + settings.handoff_classifier_budget_seconds
+    try:
+        future = _classifier_pool.submit(classify, rules, text, company_name=company_name,
+                                         deadline=deadline, complete_fn=complete)
+    except Exception:  # noqa: BLE001
+        logger.warning("分類層沒送出去,這一則不看它", exc_info=True)
+        return None
+    return _PendingClassifier(future, deadline)
+
+
+def _await_classifier(pending: _PendingClassifier | None) -> Decision | None:
+    """等分類層的結果,最多到它的截止時間。等不到、壞掉都當沒判斷 ——
+    這一層只會多轉、不會少轉。"""
+    if pending is None:
+        return None
+    try:
+        return pending.future.result(timeout=max(0.0, pending.deadline - time.monotonic()))
+    except FuturesTimeout:
+        logger.warning("分類層超過截止時間沒回,這一則不看它")
+    except Exception:  # noqa: BLE001
+        logger.warning("分類層失敗,這一則不看它", exc_info=True)
+    return None
 
 
 @router.post("/webhook/{slug}")
@@ -239,6 +284,7 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 fallback = company.fallback_message
                 booking_config = company.booking_config
                 contact = company.contact
+                company_name = company.name
 
         handoff_args = dict(company_id=company_id, user_pk=user_pk, client=client,
                             reply_token=reply_token, line_user_id=line_user_id,
@@ -267,6 +313,9 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
             system_prompt += "\n\n" + booking.booking_prompt(
                 booking_config, today=booking.today_taipei(now), contact=contact)
             tools += booking.build_tools(booking_config)
+
+        # 分類層先送出去,跟主模型同時跑:只看升級規則與這一句,不受 FAQ 稀釋。
+        classifier = _start_classifier(settings, rules, text, company_name)
 
         # 這一輪真正新增的預約。店員只通知這些:模型重複呼叫 create_booking 時
         # 工具回 duplicate(同一位客人同一時段已經有一筆),那一筆店員早就收過了。
@@ -319,6 +368,15 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
         if agent.handoff is not None:
             _handoff(decision=decision_from_tool(rules, agent.handoff.arguments),
                      prefix=confirmation, **handoff_args)
+            notify_new_bookings()
+            return
+
+        # 分類層:模型沒呼叫工具時才看(模型自己呼叫的有類別與理由,最完整)。
+        # 排在 fallback 前面 —— 模型失敗但分類層說要轉,照樣轉;排在兩道安全網前面,
+        # 類別才不會被標成「轉真人」。客人聽到的是店家的 script,模型臨場寫的那段丟掉。
+        classified = _await_classifier(classifier)
+        if classified is not None:
+            _handoff(decision=classified, prefix=confirmation, **handoff_args)
             notify_new_bookings()
             return
 
