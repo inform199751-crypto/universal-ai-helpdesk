@@ -448,6 +448,25 @@ def test_when_nvidia_fails_openrouter_answers_with_its_own_key(two_providers):
     ]
 
 
+def test_primary_only_tries_just_the_first_endpoint(two_providers):
+    """分類層用:失敗就算了,不退到 OpenRouter —— 一天 50 次的額度不能被它吃掉。"""
+    calls = []
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}], primary_only=True,
+                 client=_http(_recording(calls, {
+                     "nv/super": lambda: httpx.Response(503, text="overloaded"),
+                     "or/free": lambda: _ok("備援答的")})))
+    assert [c[2] for c in calls] == ["nv/super"]
+
+
+def test_primary_only_still_returns_the_first_endpoints_answer(two_providers):
+    calls = []
+    r = complete([{"role": "user", "content": "嗨"}], primary_only=True,
+                 client=_http(_recording(calls, {"nv/super": lambda: _ok("safety")})))
+    assert r.text == "safety"
+    assert [c[2] for c in calls] == ["nv/super"]
+
+
 def test_with_an_nvidia_key_the_openrouter_copy_of_the_model_is_not_tried(two_providers):
     """OpenRouter 上的 :free 版跟 NVIDIA 主要模型是同一顆 —— NVIDIA 塞車時
     它多半也塞車(9/24 四次全限流),而 OpenRouter 失敗的請求也扣每日額度。"""
