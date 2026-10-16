@@ -7,6 +7,10 @@ safety 換句話說只有約 65–70% 會轉,模型自己寫了「需要醫師�
 
 不碰資料庫、不送訊息;失敗一律回 None —— 這一層只會多轉、不會少轉,
 關鍵字層、模型的工具呼叫與兩道安全網照舊。
+
+只有判成 L3(人身安全、法律)才轉。2026-10-16 量測:分類層補上的轉接幾乎都是 safety,
+而電商 FAQ「商品標錯價怎麼辦」約一半被判成 money,三種 prompt 寫法都消不乾淨。
+漏轉的代價 L3 最高;money、privacy 交回既有三層,這一層就不會在那裡誤轉。
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ from app.agent.llm import LLMResult
 logger = logging.getLogger(__name__)
 
 NONE_LABEL = "none"
+# 判成這些等級的規則才轉;prompt 照樣列出全部 transfer 類別,L2 的問題才有地方放,不會被擠進 safety
+ACT_LEVELS = ("L3",)
 # 模型偶爾會把代號包在標點或引號裡(半形、全形都有);去掉這些再比對,其他一律不猜
 _STRIP_CHARS = (" \t\r\n.,!?:;\"'`*()"
                 "。、，！？：；（）"  # 。、,!?:;()
@@ -74,8 +80,8 @@ def parse_label(reply: str, rules: list[dict]) -> str | None:
 
 def classify(rules: list[dict], text: str, *, company_name: str, deadline: float,
              complete_fn: Callable[..., LLMResult]) -> Decision | None:
-    if not _transfer(rules):
-        return None
+    if not any(r.get("level") in ACT_LEVELS for r in _transfer(rules)):
+        return None   # 沒有會轉的類別,問了也白問
     started = time.monotonic()
     try:
         result = complete_fn(build_classifier_messages(rules, text, company_name=company_name),
@@ -88,6 +94,10 @@ def classify(rules: list[dict], text: str, *, company_name: str, deadline: float
     label = parse_label(result.text, rules)
     if label is None:
         logger.info("分類層 判斷=不轉(%s)%d ms", (result.text or "").strip()[:20], elapsed)
+        return None
+    level = next(r.get("level") for r in _transfer(rules) if r["category"] == label)
+    if level not in ACT_LEVELS:
+        logger.info("分類層 判斷=%s(%s,交給既有三層)%d ms", label, level, elapsed)
         return None
     logger.info("分類層 判斷=%s %d ms", label, elapsed)
     return decision_from_classifier(rules, label)

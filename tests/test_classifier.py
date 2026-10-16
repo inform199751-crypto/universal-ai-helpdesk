@@ -109,6 +109,27 @@ def test_classify_returns_the_decision_for_a_transfer_category():
     assert call.get("tools") is None   # 純文字代號,不給工具(spec 決策 7)
 
 
+def test_classify_only_acts_on_l3_categories():
+    """2026-10-16 量測:電商 FAQ「商品標錯價怎麼辦」約一半被判成 money,三種 prompt 寫法都消不乾淨。
+    分類層補上的轉接幾乎都是 safety;money、privacy 交回既有三層,誤轉就不會發生。"""
+    fake, calls = _fake("money")   # RULES 裡 money 是 L2
+    assert classify(RULES, "上次的收費不對", company_name="X", deadline=1.0,
+                    complete_fn=fake) is None
+    assert len(calls) == 1          # 照樣問(prompt 列出全部類別,money 才有地方放)
+
+
+def test_classify_without_l3_rules_does_not_call_the_model():
+    fake, calls = _fake("money")
+    l2_only = [r for r in RULES if r.get("level") != "L3"]
+    assert classify(l2_only, "上次的收費不對", company_name="X", deadline=1.0,
+                    complete_fn=fake) is None
+    assert calls == []
+
+
+def test_the_prompt_still_lists_l2_categories_so_they_do_not_crowd_into_safety():
+    assert "money(帳務)" in _system()
+
+
 def test_classify_none_is_no_decision():
     fake, _ = _fake("none")
     assert classify(RULES, "禮拜六有看診嗎", company_name="X", deadline=1.0,
