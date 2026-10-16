@@ -48,6 +48,9 @@ services:
       # 選填。沒設時傳進去的是空字串,app 當成「沒有 NVIDIA」只走 OpenRouter
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NVIDIA_MODEL: ${NVIDIA_MODEL:-nvidia/nemotron-3-super-120b-a12b}
+      # 預設關思考(理由見 app/config.py)。:-false 不能省:寫成 :- 的話沒設時傳進去的是
+      # 空字串,bool 解析不了,app 直接起不來
+      NVIDIA_ENABLE_THINKING: ${NVIDIA_ENABLE_THINKING:-false}
       # 速率限制。0 = 關閉那一條(跑評測或 demo 前想暫時關掉時)
       RATE_LIMIT_USER_PER_MINUTE: ${RATE_LIMIT_USER_PER_MINUTE:-5}
       RATE_LIMIT_USER_PER_DAY: ${RATE_LIMIT_USER_PER_DAY:-20}

@@ -32,8 +32,11 @@ if _settings.database_url.startswith("sqlite"):
         # 記憶體資料庫預設每條連線各自獨立,測試會看不到彼此寫的東西
         _kwargs["poolclass"] = StaticPool
 
+# hide_parameters:預約資料有姓名與電話,SQLAlchemy 的錯誤訊息預設會把綁定的參數
+# 一起印出來,logger.exception 一記就進了 log。
 engine = create_engine(
-    _settings.database_url, connect_args=_connect_args, future=True, **_kwargs
+    _settings.database_url, connect_args=_connect_args, future=True,
+    hide_parameters=True, **_kwargs
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 

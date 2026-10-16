@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import Column, ForeignKey, Integer, String, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import Base, session_scope
@@ -104,3 +104,15 @@ def test_session_scope_closes_session_on_exit():
             pass
 
     mock_close.assert_called_once()
+
+
+def test_database_errors_do_not_carry_the_bound_values():
+    """預約資料有姓名與電話。SQLAlchemy 的錯誤訊息預設會附上綁定的參數,
+    logger.exception 一印,客人的電話就進了 log。"""
+    with pytest.raises(DBAPIError) as exc_info:
+        with session_scope() as db:
+            db.execute(text("SELECT * FROM _t_no_such_table WHERE phone = :phone"),
+                       {"phone": "0912345678"})
+    message = str(exc_info.value)
+    assert "_t_no_such_table" in message      # 錯誤本身還看得出是哪一句出事
+    assert "0912345678" not in message

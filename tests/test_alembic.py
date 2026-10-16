@@ -104,3 +104,31 @@ def test_downgrade_removes_contact_and_the_created_at_index(alembic_sqlite):
     command.downgrade(cfg, ESCALATION)
     assert "contact" not in _columns(url)
     assert "ix_chat_created" not in _indexes(url, "chat_histories")
+
+
+CONTACT_INDEX = "7b1e4c2a9d30"
+
+
+def test_upgrade_adds_bookings_and_booking_config(alembic_sqlite):
+    cfg, url = alembic_sqlite
+    command.upgrade(cfg, "head")
+    assert "booking_config" in _columns(url)
+    engine = create_engine(url)
+    try:
+        insp = inspect(engine)
+        assert "bookings" in insp.get_table_names()
+        assert "ix_bookings_slot" in {i["name"] for i in insp.get_indexes("bookings")}
+    finally:
+        engine.dispose()
+
+
+def test_downgrade_removes_bookings_and_booking_config(alembic_sqlite):
+    cfg, url = alembic_sqlite
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, CONTACT_INDEX)
+    assert "booking_config" not in _columns(url)
+    engine = create_engine(url)
+    try:
+        assert "bookings" not in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()

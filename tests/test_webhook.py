@@ -982,3 +982,366 @@ def test_a_non_text_message_still_gets_the_canned_reply_over_the_limit(line_out,
     with TestClient(app) as client:
         _post(client, _image_body(msg_id="M11"))
     assert _replies(line_out) == [NON_TEXT_REPLY]
+
+# --- 預約 agent ---------------------------------------------------------------
+
+from datetime import date  # noqa: E402
+
+from app import booking  # noqa: E402
+from app.models import Booking  # noqa: E402
+
+BOOKING = {"label": "訂位", "days": list("一二三四五六日"),
+           "times": ["18:00", "19:00", "20:00"], "capacity": 5, "max_party": 6,
+           "advance_days": 14, "fields": []}
+
+
+@pytest.fixture
+def bookable():
+    """acme 開放預約,回傳三天後的日期(避開「今天的時段已經過了」)。"""
+    with session_scope() as db:
+        c = db.scalar(select(Company).where(Company.slug == "acme"))
+        c.booking_config = BOOKING
+        c.contact = "02-2345-6789"
+    return (booking.today_taipei(datetime.now(timezone.utc)) + timedelta(days=3)).isoformat()
+
+
+def _llm_seq(monkeypatch, *results):
+    """依序回傳預先寫好的模型回應(可以是 LLMError);記下每次的 messages 與 tools。"""
+    calls = []
+    queue = list(results)
+
+    def fake(messages, **kw):
+        calls.append({"messages": list(messages), **kw})
+        r = queue.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr("app.routers.webhook.complete", fake)
+    return calls
+
+
+def _tool_calls(*calls):
+    return LLMResult("", token_count=1, latency_ms=1, tool_call=calls[0], tool_calls=tuple(calls))
+
+
+def _wd(day):
+    return "一二三四五六日"[date.fromisoformat(day).weekday()]
+
+
+def _args(day, **over):
+    return {"date": day, "weekday": _wd(day), "time": "20:00", "party_size": 4,
+            "name": "王小明", "phone": "0912-345-678", **over}
+
+
+def _expected_confirmation(day, time, n):
+    d = date.fromisoformat(day)
+    return f"已為您訂位 {d.month:02d}/{d.day:02d}({'一二三四五六日'[d.weekday()]}){time},{n} 位,訂位人王小明。"
+
+
+def test_a_booking_conversation_saves_the_booking_and_sends_the_models_answer(
+        bookable, line_out, monkeypatch):
+    day = bookable
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("check_availability",
+                                          {"date": day, "weekday": _wd(day), "party_size": 4},
+                                          id="c1")),
+                     _tool_calls(ToolCall("create_booking", _args(day), id="c2")),
+                     LLMResult("已為您訂好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="週五晚上 8 點 4 位,王小明 0912-345-678"))
+    assert _replies(line_out) == ["已為您訂好"]
+    with session_scope() as db:
+        (row,) = db.scalars(select(Booking)).all()
+        assert (row.booking_time, row.party_size, row.phone) == ("20:00", 4, "0912345678")
+        roles = [r.role.value for r in db.scalars(select(ChatHistory).order_by(ChatHistory.id))]
+    assert roles == ["user", "assistant"]   # 中間的工具呼叫不進對話紀錄
+    assert "日期對照" in calls[0]["messages"][0]["content"]
+    assert {t["function"]["name"] for t in calls[0]["tools"]} >= {"check_availability",
+                                                                   "create_booking"}
+
+
+def test_a_booking_with_the_wrong_weekday_is_bounced_back_to_the_model_and_corrected(
+        bookable, line_out, monkeypatch):
+    """模型把日期訂在週 X、weekday 卻填了另一天:什麼都不訂,錯誤原文(兩種讀法)回給模型,
+    它照客人說的改正後再呼叫一次才成立。"""
+    day = bookable
+    wrong = "一二三四五六日"[(date.fromisoformat(day).weekday() + 1) % 7]
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("create_booking", _args(day, weekday=wrong), id="c1")),
+                     _tool_calls(ToolCall("create_booking", _args(day), id="c2")),
+                     LLMResult("已為您訂好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    bounced = json.loads(calls[1]["messages"][-1]["content"])
+    assert bounced["ok"] is False
+    assert f"{day} 是週{_wd(day)},不是週{wrong}" in bounced["error"]
+    assert f"weekday 請填「{_wd(day)}」" in bounced["error"]
+    assert _replies(line_out) == ["已為您訂好"]
+    with session_scope() as db:
+        assert len(db.scalars(select(Booking)).all()) == 1
+
+
+def test_when_the_model_fails_after_booking_only_the_confirmation_is_sent(
+        bookable, line_out, monkeypatch):
+    """客人要辦的事辦成了 —— 接一句「連線有點問題,可以再問一次嗎」只會讓人以為沒訂到。"""
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day, time="19:00", party_size=2), id="c1")),
+             LLMError("上游掛了"))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == [_expected_confirmation(day, "19:00", 2)]
+
+
+def _walk_to_the_last_step(day, last):
+    """前面三步都在查空位,第四步(最後一步,跟前面一樣只給工具規格)回 last。"""
+    check = [_tool_calls(ToolCall("check_availability",
+                                  {"date": day, "weekday": _wd(day), "party_size": 4}, id=f"c{i}"))
+             for i in (1, 2, 3)]
+    return [*check, last]
+
+
+def test_a_booking_the_model_asks_for_on_the_last_step_gets_only_the_confirmation(
+        bookable, line_out, monkeypatch):
+    """2026-10-08 實測 NVIDIA 在最後一步不給工具也照樣回 create_booking。預約照樣成立;
+    同時回的文字是在工具結果出來之前寫的,客人收到的只能是程式組的確認句。"""
+    day = bookable
+    create = ToolCall("create_booking", _args(day), id="c4")
+    calls = _llm_seq(monkeypatch, *_walk_to_the_last_step(
+        day, LLMResult("好的,幫您處理", token_count=1, latency_ms=1,
+                       tool_call=create, tool_calls=(create,))))
+    with TestClient(app) as client:
+        _post(client, _body(text="週五晚上 8 點 4 位,王小明 0912-345-678"))
+    # 真的走到最後一步:規格照帶(模型看不到規格會漏掉必填的 weekday),每一步都沒有 tool_choice
+    assert len(calls) == 4
+    assert calls[3]["tools"] == calls[0]["tools"]
+    assert {t["function"]["name"] for t in calls[3]["tools"]} >= {"check_availability",
+                                                                   "create_booking"}
+    assert ["tool_choice" in c for c in calls] == [False] * 4
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4)]
+    with session_scope() as db:
+        assert len(db.scalars(select(Booking)).all()) == 1
+        (answer,) = [r.content for r in db.scalars(select(ChatHistory).order_by(ChatHistory.id))
+                     if r.role.value == "assistant"]
+    assert answer == _expected_confirmation(day, "20:00", 4)
+
+
+def test_a_refused_booking_on_the_last_step_sends_the_fallback_not_the_models_claim(
+        bookable, line_out, monkeypatch):
+    """模型在看到結果之前寫了「已為您訂位」,但這筆超過人數上限、根本沒成立 ——
+    客人不能收到那句話,只能收到 fallback。"""
+    day = bookable
+    create = ToolCall("create_booking", _args(day, party_size=99), id="c4")
+    _llm_seq(monkeypatch, *_walk_to_the_last_step(
+        day, LLMResult("已為您訂位", token_count=1, latency_ms=1,
+                       tool_call=create, tool_calls=(create,))))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == ["我這邊剛剛連線有點問題,可以再問一次嗎?"]
+    with session_scope() as db:
+        assert db.scalars(select(Booking)).all() == []
+
+
+def test_two_bookings_on_the_last_step_are_both_confirmed_to_the_customer(
+        bookable, line_out, monkeypatch):
+    """最後一步一次訂了兩天、兩筆都成立:店員收到兩則推播,客人也要收到兩句確認句 ——
+    只講最後一筆的話,客人不知道自己還有另一筆。"""
+    day = bookable
+    day2 = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = "Ustaff"
+    first = ToolCall("create_booking", _args(day), id="c4")
+    second = ToolCall("create_booking", _args(day2), id="c5")
+    _llm_seq(monkeypatch, *_walk_to_the_last_step(
+        day, LLMResult("", token_count=1, latency_ms=1,
+                       tool_call=first, tool_calls=(first, second))))
+    with TestClient(app) as client:
+        _post(client, _body(text="這週五跟週六晚上 8 點都要 4 位,王小明 0912-345-678"))
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4) + "\n"
+                                  + _expected_confirmation(day2, "20:00", 4)]
+    assert len(_pushes(line_out)) == 2
+    with session_scope() as db:
+        assert len(db.scalars(select(Booking)).all()) == 2
+
+
+def test_an_earlier_booking_is_still_confirmed_when_the_last_step_tool_is_refused(
+        bookable, line_out, monkeypatch):
+    """第 1 步已經訂成,最後一步又呼叫一次 create_booking 卻被拒(人數超過上限):
+    最後一步的工具執行過,text 是 None —— 客人收到的要是前面那筆的確認句,不是 fallback。"""
+    day = bookable
+    first = _tool_calls(ToolCall("create_booking", _args(day), id="c1"))
+    checks = [_tool_calls(ToolCall("check_availability",
+                                   {"date": day, "weekday": _wd(day), "party_size": 4},
+                                   id=f"c{i}"))
+              for i in (2, 3)]
+    refused = _tool_calls(ToolCall("create_booking", _args(day, time="19:00", party_size=99),
+                                   id="c4"))
+    calls = _llm_seq(monkeypatch, first, *checks, refused)
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert len(calls) == 4   # 真的走到最後一步
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4)]
+    with session_scope() as db:
+        assert len(db.scalars(select(Booking)).all()) == 1
+
+
+def test_the_program_confirmation_keeps_the_booked_name_as_given(bookable, line_out, monkeypatch):
+    """確認句是程式組的、本來就是繁體,不該再過簡繁轉換 —— OpenCC 會把常見姓氏改掉
+    (余→餘、于→於),客人會看到自己的名字被寫錯。"""
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day, name="余淑芬"), id="c1")),
+             LLMError("上游掛了"))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4).replace("王小明", "余淑芬")]
+
+
+def test_the_models_text_is_converted_but_the_booked_name_is_kept(bookable, line_out, monkeypatch):
+    """模型自己的字照樣轉繁體,但訂位人的名字換回客人給的寫法。
+    (OpenCC s2t 把「为」轉成「爲」,不是「為」 —— 這裡斷言的是它實際的輸出。)"""
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day, name="余淑芬"), id="c1")),
+             LLMResult("已为您订好,余淑芬", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == ["已爲您訂好,余淑芬"]
+    with session_scope() as db:   # 對話紀錄要跟客人實際看到的一致
+        assert db.scalars(select(ChatHistory.content).where(
+            ChatHistory.role == ChatRole.ASSISTANT)).all() == ["已爲您訂好,余淑芬"]
+
+
+def test_a_handoff_after_booking_still_tells_the_customer_it_is_booked(
+        bookable, rules, line_out, monkeypatch):
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             _tool_calls(ToolCall("transfer_to_human", {"category": "safety"}, id="c2")))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位,另外我小孩對花生很敏感"))
+    assert _replies(line_out) == [_expected_confirmation(day, "20:00", 4) + SAFETY_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN
+    assert any("【新訂位】" in p[2] for p in _pushes(line_out))
+
+
+def test_the_staff_is_told_about_a_new_booking(bookable, line_out, monkeypatch):
+    day = bookable
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = "Ustaff"
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             LLMResult("好的", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    d = date.fromisoformat(day)
+    assert _pushes(line_out) == [("push", "Ustaff",
+                                  f"【新訂位】{d.month:02d}/{d.day:02d}({'一二三四五六日'[d.weekday()]})"
+                                  f"20:00 4 位 王小明 0912345678")]
+
+
+def test_an_unknown_tool_gets_an_error_result_and_the_loop_goes_on(
+        bookable, line_out, monkeypatch):
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("cancel_booking", {}, id="c1")),
+                     LLMResult("抱歉,取消請直接來電", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="我要取消訂位"))
+    assert json.loads(calls[1]["messages"][-1]["content"]) == {"ok": False, "error": "沒有這個工具"}
+    assert _replies(line_out) == ["抱歉,取消請直接來電"]
+
+
+def test_without_a_booking_config_there_are_no_booking_tools(rules, line_out, monkeypatch):
+    calls = _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="嗨"))
+    assert [t["function"]["name"] for t in calls[0]["tools"]] == ["transfer_to_human"]
+
+
+def test_the_typing_animation_lasts_as_long_as_the_agent_budget(line_out, monkeypatch):
+    seconds = []
+    monkeypatch.setattr("app.routers.webhook.LineClient.show_loading",
+                        lambda self, uid, seconds_=None, **kw: seconds.append(kw.get("seconds", seconds_)) or True)
+    _llm(monkeypatch)
+    with TestClient(app) as client:
+        _post(client, _body(text="嗨"))
+    assert seconds == [45]
+
+
+def test_asking_to_change_a_booking_changes_nothing_and_is_not_announced_again(
+        bookable, line_out, monkeypatch):
+    """客人想改人數、模型又呼叫一次 create_booking:同一時段已經有這位客人的預約,工具回
+    duplicate 並註明沒有更改 —— 改、取消要客人自己聯繫店家(spec §一),模型照實回答。
+    資料不動;店員早就收過那一筆的「新訂位」,不該再收一次(spec §八)。"""
+    honest = "您這個時段已經有訂位了,要改人數請直接來電 02-2345-6789"
+    day = bookable
+    with session_scope() as db:
+        acme = db.scalar(select(Company).where(Company.slug == "acme"))
+        acme.staff_notify_to = "Ustaff"
+        user = User(company_id=acme.id, line_user_id="U1")
+        db.add(user)
+        db.flush()
+        db.add(Booking(company_id=acme.id, user_id=user.id, booking_date=date.fromisoformat(day),
+                       booking_time="20:00", party_size=2, name="王小明", phone="0912345678",
+                       status="confirmed"))
+    calls = _llm_seq(monkeypatch,
+                     _tool_calls(ToolCall("create_booking", _args(day, party_size=4), id="c1")),
+                     LLMResult(honest, token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="人數改成 4 位"))
+    assert "沒有更改" in json.loads(calls[1]["messages"][-1]["content"])["note"]
+    assert _pushes(line_out) == []
+    assert _replies(line_out) == [honest]
+    with session_scope() as db:
+        (row,) = db.scalars(select(Booking)).all()
+        assert row.party_size == 2
+
+
+def test_a_new_booking_followed_by_a_duplicate_is_announced_once(bookable, line_out, monkeypatch):
+    """同一輪裡先成立、模型又重複呼叫一次:店員收到一則,不是零則也不是兩則。"""
+    day = bookable
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = "Ustaff"
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             _tool_calls(ToolCall("create_booking", _args(day), id="c2")),
+             LLMResult("好的", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert len(_pushes(line_out)) == 1
+    assert "【新訂位】" in _pushes(line_out)[0][2]
+
+
+def test_the_staff_push_for_a_booking_comes_after_the_customer_is_answered(
+        bookable, line_out, monkeypatch):
+    """reply token 約一分鐘有效、loop 最多用 45 秒;推播沒有時限,所以排在回覆後面。"""
+    day = bookable
+    with session_scope() as db:
+        db.scalar(select(Company).where(Company.slug == "acme")).staff_notify_to = "Ustaff"
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             LLMResult("好的", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert [e[0] for e in line_out] == ["reply", "push"]
+
+
+@pytest.mark.parametrize("second_response", [
+    _tool_calls(ToolCall("transfer_to_human", {"category": "safety"}, id="c2")),   # 模型呼叫工具
+    LLMResult(SAFETY_SCRIPT, token_count=1, latency_ms=1),                          # 照念 script
+    LLMResult("由於這涉及健康問題,我將為您轉接給專業人員協助。",
+              token_count=1, latency_ms=1),                                         # 口頭說要轉接
+], ids=["tool", "recited", "promised"])
+def test_the_customer_is_answered_before_the_booking_push_even_when_handing_off(
+        second_response, bookable, rules, line_out, monkeypatch):
+    day = bookable
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             second_response)
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位,另外我小孩對花生很敏感"))
+    assert line_out[0][0] == "reply"
+    # 三條轉真人的路都要先告訴客人訂好了 —— 安全網那兩條少傳 prefix 也要抓得到
+    assert line_out[0][1].startswith(_expected_confirmation(day, "20:00", 4))
+    assert any("【新訂位】" in p[2] for p in _pushes(line_out))

@@ -26,12 +26,16 @@ class Settings(BaseSettings):
     openrouter_fallback_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     # NVIDIA 自家 API(build.nvidia.com)。選填:有 key 時它當主要模型、OpenRouter
     # 退成備援;沒有(含 compose 傳進來的空字串)就跟以前一樣只走 OpenRouter。
-    # 2026-10-05 實測 10 題,super 轉真人 5/5、誤轉 0、中位數 1.5 秒 —— 同一顆
+    # 2026-10-05 實測 10 題(當時思考是開的),super 轉真人 5/5、誤轉 0、中位數 1.5 秒 —— 同一顆
     # 模型在 OpenRouter 的 :free 版 9/24 四次全限流。免費層是每分鐘約 40 次,
     # 沒有每日上限。模型名不帶 :free:那是 OpenRouter 的命名,NVIDIA 不認得。
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    # 預設關掉思考。2026-10-08 實測:預約說明很長,開著思考時開放式問題(「我想訂位」)
+    # 5 次裡 3 次把 max_tokens 1200 全拿去想、content 是空的(11~37 秒);關掉後
+    # 5/5 在 0.9~3 秒內答出來。只送給 NVIDIA,OpenRouter 不帶這個參數。
+    nvidia_enable_thinking: bool = False
     llm_timeout_seconds: float = 45.0
     # 兩個模型「合計」最多等多久。llm_timeout_seconds 管不到這件事:httpx 的
     # timeout 是兩次讀到資料之間的上限,而 OpenRouter 在生成時會持續送空白
@@ -47,9 +51,20 @@ class Settings(BaseSettings):
     # 速率限制(設計見 docs/superpowers/specs/2026-10-05-rate-limit-design.md)。
     # 0 = 關閉那一條。全站每分鐘 30 留 10 的餘裕在 NVIDIA 免費層的每分鐘約 40 次以下 ——
     # 超過的話 NVIDIA 回 429,全部退到 OpenRouter,一天 50 次幾分鐘就燒光。
+    # 這個估算假設一則訊息呼叫一次模型。有了 agent loop,預約的訊息最多要 4 次,尖峰時
+    # 會超過 NVIDIA 的每分鐘約 40 次 —— 2026-10-06 的預約 spec(決策 9)接受這點:
+    # 多數訊息仍是 1 次,429 時退到 OpenRouter。
     rate_limit_user_per_minute: int = Field(5, ge=0)
     rate_limit_user_per_day: int = Field(20, ge=0)
     rate_limit_global_per_minute: int = Field(30, ge=0)
+
+    # agent loop(設計見 docs/superpowers/specs/2026-10-06-booking-agent-design.md 第六節)。
+    # 最後一步跟前面一樣只給工具規格、不送 tool_choice;
+    # 模型仍回工具呼叫時照樣執行、不再問模型(見 loop.py 檔頭)。
+    # 45 秒是整個 loop 合計:LINE reply token 約一分鐘有效,留 15 秒給送出與備援。
+    # llm_total_budget_seconds 保留給單次呼叫。
+    agent_max_steps: int = Field(4, ge=1)
+    agent_total_budget_seconds: float = Field(45.0, gt=0)
 
     @field_validator("*", mode="before")
     @classmethod

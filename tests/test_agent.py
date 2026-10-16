@@ -305,6 +305,27 @@ def test_tools_are_sent_upstream_only_when_given():
     assert seen[1]["tools"] == [TOOL]
 
 
+def test_tool_choice_is_never_sent():
+    """tool_choice 一律不送,也沒有參數可以送(agent loop 最後一步跟其他步一樣只給規格):
+    NVIDIA 收到 none 時 3 次裡 2 次漏掉必填的 weekday(只給規格 3/3 齊全);OpenRouter 收到 none
+    的那次照樣回 create_booking,沒觀察到被遵守過,真的遵守時反而讓資料齊全的訂位成立不了。"""
+    import inspect
+
+    from app.agent.llm import _complete_once
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content))
+        return _ok()
+
+    complete([{"role": "user", "content": "嗨"}], client=_http(handler))
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL], client=_http(handler))
+    assert ["tool_choice" in body for body in seen] == [False, False]
+    assert seen[1]["tools"] == [TOOL]
+    for fn in (complete, _complete_once):
+        assert "tool_choice" not in inspect.signature(fn).parameters
+
+
 def test_text_and_a_tool_call_are_both_returned():
     """同時回了文字與工具呼叫時兩個都要交出去,由呼叫端決定 ——
     在這裡丟掉任何一個,webhook 就沒辦法實作「以工具為準」。"""
@@ -449,6 +470,62 @@ def test_an_empty_nvidia_key_means_openrouter_only(two_providers):
     assert calls == [(f"{OR_URL}/chat/completions", "Bearer sk-or-test", "or/free")]
 
 
+def _body_recorder(bodies, responses):
+    """記下每個請求實際送出的 body(依序),回應依 model 分派。"""
+    def handler(request):
+        body = _json.loads(request.content)
+        bodies.append(body)
+        return responses.get(body["model"], lambda: httpx.Response(404, text="unknown model"))()
+    return handler
+
+
+def test_thinking_is_off_by_default_for_nvidia(two_providers):
+    """2026-10-08 實測:預約說明很長,開著思考時開放式問題(「我想訂位」)5 次裡 3 次
+    把 max_tokens 全拿去想、content 是空的。chat_template_kwargs 是 NVIDIA 的參數。"""
+    bodies = []
+    complete([{"role": "user", "content": "我想訂位"}],
+             client=_http(_body_recorder(bodies, {"nv/super": _ok})))
+    assert [b["model"] for b in bodies] == ["nv/super"]
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert bodies[0]["reasoning"] == {"exclude": True}  # 既有的參數照舊
+
+
+def test_both_upstreams_get_the_tool_schemas_and_neither_gets_tool_choice(two_providers):
+    """NVIDIA 失敗退到 OpenRouter 時,兩家拿到的工具參數一樣:規格照帶、沒有 tool_choice。"""
+    bodies = []
+    complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+             client=_http(_body_recorder(bodies, {"nv/super": _overloaded, "or/free": _ok})))
+    assert [b["model"] for b in bodies] == ["nv/super", "or/free"]
+    assert [b["tools"] for b in bodies] == [[TOOL], [TOOL]]
+    assert ["tool_choice" in b for b in bodies] == [False, False]
+
+
+def test_nvidia_only_parameters_are_not_sent_to_openrouter(two_providers):
+    """NVIDIA 失敗退回 OpenRouter 時,額外參數跟著 NVIDIA 那組走,不會被帶到另一家。"""
+    bodies = []
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_body_recorder(bodies, {"nv/super": _overloaded, "or/free": _ok})))
+    assert [b["model"] for b in bodies] == ["nv/super", "or/free"]
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "chat_template_kwargs" not in bodies[1]
+
+
+def test_nvidia_thinking_can_be_turned_on_by_setting(two_providers):
+    two_providers.nvidia_enable_thinking = True
+    bodies = []
+    complete([{"role": "user", "content": "嗨"}],
+             client=_http(_body_recorder(bodies, {"nv/super": _ok})))
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_the_nvidia_thinking_setting_defaults_to_off(monkeypatch):
+    """上面的測試用的是替身設定;真正的預設值寫在 Settings,改成 True 要有測試擋。"""
+    from app.config import Settings
+    monkeypatch.delenv("NVIDIA_ENABLE_THINKING", raising=False)
+    s = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k")
+    assert s.nvidia_enable_thinking is False
+
+
 def test_the_default_nvidia_endpoint_and_model_are_the_ones_nvidia_serves(monkeypatch):
     """模型名不能帶 OpenRouter 的 :free 後綴 —— NVIDIA 不認得那個名字,
     每則訊息都會失敗再退回,看起來「有在動」其實主要模型從沒答過。"""
@@ -480,3 +557,103 @@ def test_the_log_says_which_provider_answered(two_providers, caplog):
     done = [rec.message for rec in caplog.records if "回答完成" in rec.message]
     assert len(done) == 2
     assert "NVIDIA" in done[0] and "OpenRouter" in done[1]
+
+
+# --- agent loop 需要的:所有工具呼叫、截止時間 ---------------------------------
+
+def _two_tool_calls():
+    return httpx.Response(200, json={"choices": [{"message": {"content": None, "tool_calls": [
+        {"id": "c1", "type": "function",
+         "function": {"name": "check_availability", "arguments": '{"date": "2026-10-09"}'}},
+        {"id": "c2", "type": "function",
+         "function": {"name": "create_booking", "arguments": '{"time": "20:00"}'}}]}}],
+        "usage": {"total_tokens": 9}})
+
+
+def test_every_tool_call_is_returned_with_its_id():
+    """工具結果放回對話時,tool_call_id 要對得上 —— 只回第一個的話,第二個工具永遠不會被執行。"""
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: _two_tool_calls()))
+    assert [(c.name, c.arguments, c.id) for c in r.tool_calls] == [
+        ("check_availability", {"date": "2026-10-09"}, "c1"),
+        ("create_booking", {"time": "20:00"}, "c2")]
+    assert r.tool_call == ToolCall("check_availability", {"date": "2026-10-09"})
+
+
+def test_a_tool_call_without_an_id_gets_one():
+    resp = httpx.Response(200, json={"choices": [{"message": {"tool_calls": [
+        {"type": "function", "function": {"name": "check_availability", "arguments": "{}"}}]}}]})
+    r = complete([{"role": "user", "content": "嗨"}], tools=[TOOL],
+                 client=_http(lambda req: resp))
+    assert r.tool_calls[0].id == "call_0"
+
+
+def test_tool_results_are_sent_upstream_unchanged():
+    msgs = [{"role": "user", "content": "嗨"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "check_availability", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"ok": true}'}]
+    seen = []
+
+    def handler(request):
+        seen.append(_json.loads(request.content)["messages"])
+        return _ok()
+
+    complete(msgs, client=_http(handler))
+    assert seen == [msgs]
+
+
+def test_a_deadline_overrides_the_default_budget():
+    """agent loop 的每一步拿的是剩下的時間。不照 deadline 停的話,一步就能吃掉整個 loop 的預算。"""
+    started = _time.monotonic()
+    with pytest.raises(LLMError):
+        complete([{"role": "user", "content": "嗨"}],
+                 client=_http(_by_model({PREFERRED: _trickling(), FALLBACK: _trickling()})),
+                 deadline=_time.monotonic() + 0.5)
+    assert _time.monotonic() - started < TRICKLE_SECONDS
+
+
+def test_each_request_timeout_is_clamped_to_the_remaining_time():
+    """NVIDIA 的 API 不串流:生成完才一次送出,中間一個位元組都沒有 —— 只在收到資料時
+    看時鐘的話永遠看不到。請求本身的 timeout 要縮到剩下的時間,不然一步從第 40 秒開始,
+    可以拖到第 85 秒,越過 LINE reply token 的效期。"""
+    seen = []
+
+    def handler(request):
+        seen.append(request.extensions["timeout"])
+        return _ok()
+
+    client = httpx.Client(transport=httpx.MockTransport(handler),
+                          timeout=_S.llm_timeout_seconds)
+    complete([{"role": "user", "content": "嗨"}], client=client,
+             deadline=_time.monotonic() + 2.0)
+    assert seen and all(0 < v <= 2.0 for v in seen[0].values()), seen
+
+
+def test_a_silent_upstream_is_given_up_at_the_deadline(monkeypatch):
+    """final review 用真的 socket 驗出來的形狀:連得上,但一個位元組都不回(NVIDIA 生成期間
+    就是這樣)。沒有縮 timeout 的話,要等滿 llm_timeout_seconds 才放棄。"""
+    import socket
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)   # 只 listen 不 accept:連線在系統的佇列裡完成,請求送得出去但永遠沒有回應
+
+    class FakeSettings:
+        openrouter_model = PREFERRED
+        openrouter_fallback_model = FALLBACK
+        openrouter_base_url = f"http://127.0.0.1:{srv.getsockname()[1]}"
+        openrouter_api_key = "k"
+        llm_max_tokens = _S.llm_max_tokens
+        llm_timeout_seconds = 5.0
+        llm_total_budget_seconds = 25.0
+
+    monkeypatch.setattr("app.agent.llm.get_settings", lambda: FakeSettings())
+    started = _time.monotonic()
+    try:
+        with pytest.raises(LLMError):
+            complete([{"role": "user", "content": "嗨"}], deadline=started + 1.0)
+    finally:
+        srv.close()
+    assert _time.monotonic() - started < 3.0

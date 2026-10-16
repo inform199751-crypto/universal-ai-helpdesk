@@ -10,7 +10,8 @@ ALL = ["restaurant", "ecommerce", "clinic"]
 @pytest.mark.parametrize("industry", ALL)
 def test_industry_has_all_five_files(industry):
     data = load_industry(INDUSTRIES / industry)
-    assert set(data) == {"company", "faq", "policies", "escalation", "glossary"}
+    assert {"company", "faq", "policies", "escalation", "glossary"} <= set(data)
+    assert set(data) - {"company", "faq", "policies", "escalation", "glossary"} <= {"booking"}
 
 
 @pytest.mark.parametrize("industry", ALL)
@@ -65,3 +66,16 @@ def test_clinic_catches_diagnosis_questions_with_the_keyword_layer(text):
     rules = load_industry(INDUSTRIES / "clinic")["escalation"]
     decision = match_keyword(rules, text)
     assert decision is not None and decision.category == "safety"
+
+
+# --- booking.yaml(選填) ---------------------------------------------------
+
+def test_restaurant_and_clinic_take_bookings_but_ecommerce_does_not():
+    assert load_industry(INDUSTRIES / "restaurant")["booking"]["label"] == "訂位"
+    assert load_industry(INDUSTRIES / "clinic")["booking"]["label"] == "預約"
+    assert "booking" not in load_industry(INDUSTRIES / "ecommerce")
+
+
+@pytest.mark.parametrize("industry", ALL)
+def test_booking_slots_fall_inside_opening_hours(industry):
+    assert [f for f in run_validate(industry) if f.rule in (11, 12)] == []

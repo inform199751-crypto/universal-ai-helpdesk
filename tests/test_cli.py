@@ -433,3 +433,104 @@ def test_switching_industry_rewrites_the_contact():
     run_seed("ecommerce", slug="bistro")
     with session_scope() as db:
         assert db.get(Company, cid).contact == "service@example.com"
+
+
+def test_seed_stores_the_booking_config():
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    with session_scope() as db:
+        config = db.get(Company, cid).booking_config
+    assert config["label"] == "訂位" and config["times"] == ["18:00", "19:00", "20:00"]
+
+
+def test_switching_to_an_industry_without_bookings_clears_the_config():
+    """換成電商卻留著餐廳的預約設定,電商的客服就會開始幫人「訂位」。"""
+    cid = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    run_seed("ecommerce", slug="bistro")
+    with session_scope() as db:
+        assert db.get(Company, cid).booking_config is None
+
+
+# --- bookings 指令 ------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from app.booking import today_taipei  # noqa: E402
+from app.cli import run_bookings  # noqa: E402
+from app.models import Booking  # noqa: E402
+
+
+@pytest.fixture
+def shops():
+    mine = run_seed("restaurant", slug="bistro", channel_secret=SECRET, channel_token=TOKEN)
+    other = run_seed("clinic", slug="clinic", channel_secret=SECRET, channel_token=TOKEN)
+    with session_scope() as db:
+        me = User(company_id=mine, line_user_id="U1")
+        them = User(company_id=other, line_user_id="U1")
+        db.add_all([me, them])
+        db.flush()
+        return (mine, me.id), (other, them.id)
+
+
+def _add(shop, days, time="19:00", status="confirmed", name="王小明", created_at=None):
+    company_id, user_id = shop
+    with session_scope() as db:
+        db.add(Booking(company_id=company_id, user_id=user_id,
+                       booking_date=today_taipei(datetime.now(timezone.utc)) + timedelta(days=days),
+                       booking_time=time, party_size=2, extra={}, name=name,
+                       phone="0912345678", status=status, created_at=created_at))
+
+
+def test_bookings_lists_upcoming_confirmed_bookings_in_order(shops):
+    mine, other = shops
+    _add(mine, -1, name="昨天")
+    _add(mine, 0, "20:00", name="今晚八點")
+    _add(mine, 0, "18:00", name="今晚六點")
+    _add(mine, 3, name="三天後")
+    _add(mine, 2, status="cancelled", name="取消的")
+    _add(other, 1, name="別家店")
+    assert [r["name"] for r in run_bookings("bistro")] == ["今晚六點", "今晚八點", "三天後"]
+
+
+def test_bookings_on_a_given_date(shops):
+    mine, _ = shops
+    _add(mine, 0, name="今天")
+    _add(mine, 3, name="三天後")
+    day = (today_taipei(datetime.now(timezone.utc)) + timedelta(days=3)).isoformat()
+    assert [r["name"] for r in run_bookings("bistro", on=day)] == ["三天後"]
+
+
+def test_main_bookings_prints_each_booking(shops, capsys):
+    mine, _ = shops
+    _add(mine, 1, name="王小明")
+    assert main(["bookings", "--slug", "bistro"]) == 0
+    out = capsys.readouterr().out
+    assert "王小明" in out and "0912345678" in out and "19:00" in out
+
+
+def test_bookings_for_an_unknown_slug_exits(shops):
+    with pytest.raises(SystemExit):
+        run_bookings("nope")
+
+
+def test_bookings_with_a_malformed_date_exits(shops):
+    with pytest.raises(SystemExit):
+        run_bookings("bistro", on="10/09")
+
+
+def test_bookings_includes_created_at_in_taipei_time(shops):
+    """每筆預約都要有 created_at,格式是 MM/DD HH:MM(台灣時間)。"""
+    mine, _ = shops
+    # created_at = 2026-10-06 07:54 UTC = 2026-10-06 15:54 Taiwan
+    _add(mine, 1, name="王小明", created_at=datetime(2026, 10, 6, 7, 54, tzinfo=timezone.utc))
+    rows = run_bookings("bistro")
+    assert len(rows) == 1
+    assert rows[0]["created_at"] == "10/06 15:54"
+
+
+def test_bookings_main_prints_created_at(shops, capsys):
+    """main() 的輸出要包含建立時間。"""
+    mine, _ = shops
+    _add(mine, 1, name="王小明", created_at=datetime(2026, 10, 6, 7, 54, tzinfo=timezone.utc))
+    assert main(["bookings", "--slug", "bistro"]) == 0
+    out = capsys.readouterr().out
+    assert "建立 10/06 15:54" in out
