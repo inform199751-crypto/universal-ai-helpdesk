@@ -214,7 +214,7 @@ def test_switching_industry_rewrites_the_system_prompt():
     run_seed("clinic", slug="bistro")
     with session_scope() as db:
         after = db.get(Company, cid).system_prompt
-    assert "微醺之夜" in before and "微醺之夜" not in after
+    assert "青木餐酒館" in before and "青木餐酒館" not in after
     assert "晴日皮膚科" in after
 
 
@@ -302,7 +302,7 @@ def test_main_list_prints_the_folder_name_and_the_company_name(capsys):
     """這道指令存在的理由就是「哪個資料夾是哪一家」,兩者都要印出來。"""
     assert main(["list"]) == 0
     out = capsys.readouterr().out
-    assert "restaurant" in out and "微醺之夜 Bistro" in out
+    assert "restaurant" in out and "青木餐酒館" in out
     assert "clinic" in out and "晴日皮膚科診所" in out
 
 

@@ -66,12 +66,12 @@ def _seed_source(url: str) -> None:
     with engine.begin() as conn:
         conn.execute(Base.metadata.tables["companies"].insert(), {
             "id": "11111111-1111-1111-1111-111111111111",
-            "slug": "bistro", "name": "微醺之夜", "industry": "restaurant",
+            "slug": "bistro", "name": "青木餐酒館", "industry": "restaurant",
             "line_channel_id": None,
             "line_channel_secret_enc": encrypt("chan-secret"),
             "line_channel_token_enc": encrypt("chan-token"),
             "line_destination": "Ubot0001",
-            "system_prompt": "你是微醺之夜的客服", "tone": "專業親切",
+            "system_prompt": "你是青木餐酒館的客服", "tone": "專業親切",
             "forbidden_phrases": [], "fallback_message": "再問一次",
             "human_mode_timeout_minutes": 30, "vector_collection": "kb_bistro",
             "is_active": True,

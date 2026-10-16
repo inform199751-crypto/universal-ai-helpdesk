@@ -43,7 +43,7 @@ def _db():
 @pytest.fixture
 def ids():
     with session_scope() as db:
-        c = Company(slug="bistro", name="微醺", industry="restaurant",
+        c = Company(slug="bistro", name="青木", industry="restaurant",
                     vector_collection="kb_bistro",
                     line_channel_secret_enc=b"x", line_channel_token_enc=b"x")
         db.add(c)

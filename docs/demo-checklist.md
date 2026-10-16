@@ -95,7 +95,7 @@ docker compose exec app python -m app.cli release --slug bistro
 服務真正在讀的 PostgreSQL,demo 現場看起來像沒生效。
 
 ```bash
-# 餐飲 —— 微醺之夜 Bistro
+# 餐飲 —— 青木餐酒館
 docker compose exec app python -m app.cli seed --industry restaurant --slug bistro --reset-history
 
 # 電商 —— 好日子生活選物
