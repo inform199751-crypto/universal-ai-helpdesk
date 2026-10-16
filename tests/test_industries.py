@@ -4,6 +4,7 @@ import pytest
 
 from app.cli import run_validate
 from app.knowledge.loader import load_industry
+from app.knowledge.validate import _texts
 from app.cli import INDUSTRIES
 
 ALL = ["restaurant", "ecommerce", "clinic"]
@@ -57,15 +58,19 @@ def test_three_industries_are_actually_different():
 @pytest.mark.parametrize("industry, pattern", [
     # 消保法七天解除權:退貨不必負擔任何費用,退回的運費也算在內。
     ("ecommerce", r"運費由(買方|買家|您|消費者|客人|顧客)(自行)?負擔"),
-    # 醫療法只說依病人要求提供病歷複製本,沒有要求一律本人親自來辦。
-    ("clinic", r"本人親自辦理"),
-], ids=["ecommerce-return-shipping", "clinic-records-in-person"])
-def test_faq_and_policies_do_not_contradict_official_rules(industry, pattern):
-    """模型會照 FAQ / 政策原文回答 —— 這裡寫錯,客人拿到的就是跟法規衝突的說法。
+    # 為了檢查而拆封、試用一樣能退,只有損壞才可能負擔價值減損。
+    ("ecommerce", r"可販售|完整未使用"),
+    # 醫療法只說依病人要求提供病歷複製本,沒有要求一律本人來辦。
+    ("clinic", r"本人(親自)?辦理"),
+], ids=["ecommerce-return-shipping", "ecommerce-unopened-only", "clinic-records-in-person"])
+def test_customer_facing_texts_do_not_contradict_official_rules(industry, pattern):
+    """模型會照 FAQ、政策、轉接話術原文回答 —— 這裡寫錯,客人拿到的就是跟法規
+    衝突的說法。掃的範圍跟 validate 一樣(_texts),再加上 FAQ 的問題與政策標題。
     來源與查閱日見 docs/industry-content-sources.md。"""
     data = load_industry(INDUSTRIES / industry)
-    texts = ([f"{f['q']} {f['a']}" for f in data["faq"]]
-             + [f"{p['title']} {p['content']}" for p in data["policies"]])
+    texts = ([text for _, text in _texts(data)]
+             + [f["q"] for f in data["faq"]]
+             + [p["title"] for p in data["policies"]])
     assert [t for t in texts if re.search(pattern, t)] == []
 
 
