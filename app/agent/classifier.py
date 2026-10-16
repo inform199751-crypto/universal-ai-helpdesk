@@ -33,14 +33,20 @@ def _transfer(rules: list[dict]) -> list[dict]:
 
 def build_classifier_messages(rules: list[dict], text: str, *,
                               company_name: str) -> list[dict]:
-    """例子只用 escalation 規則裡的 trigger —— 從驗收題庫拿的話,量到的是背題。"""
+    """例子只用 escalation 規則裡的 trigger —— 從驗收題庫拿的話,量到的是背題。
+
+    規則可以寫選填的 description(只給這裡用,主 prompt 不放):觸發詞只是例子,
+    模型只看例子時會把類別理解得太窄 —— 2026-10-16 實測診所「小孩發燒可以吃退燒藥嗎」
+    只看觸發詞 0/5 判 safety,加上「需要醫師判斷的健康問題」這類說明後 5/5。
+    """
     transfer = _transfer(rules)
     lines = [f"你是「{company_name}」客服系統的分流員。你不回答客人,"
              "只判斷客人這一則訊息需不需要轉給真人處理。", "", "需要轉真人的類別:"]
     for r in transfer:
         code = r["category"]
         name = f"{code}({CATEGORY_LABELS[code]})" if code in CATEGORY_LABELS else code
-        lines.append(f"- {name}:像是「{r.get('trigger', '')}」這類情況,"
+        desc = f"{r['description']}。" if r.get("description") else ""
+        lines.append(f"- {name}:{desc}像是「{r.get('trigger', '')}」這類情況,"
                      "或意思相近、換句話說的說法")
     lines += ["", f"不用轉真人,回 {NONE_LABEL}:"]
     for r in rules:

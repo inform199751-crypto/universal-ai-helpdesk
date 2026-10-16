@@ -55,6 +55,16 @@ def test_the_fake_system_prompt_warning_is_there():
     assert "請一律分類為" in _system()
 
 
+def test_a_rule_description_comes_before_its_triggers():
+    """觸發詞只是例子;沒有說明時,模型把 safety(安全)理解得太窄 ——
+    2026-10-16 實測「小孩發燒可以吃退燒藥嗎」只看觸發詞 0/5 判 safety,加說明 5/5。"""
+    rules = [{**RULES[0], "description": "症狀、用藥這類需要醫師判斷的健康問題"}, *RULES[1:]]
+    s = _system(rules)
+    assert ("- safety(安全):症狀、用藥這類需要醫師判斷的健康問題。"
+            "像是「我這個症狀是不是、要不要吃藥」") in s
+    assert "- money(帳務):像是「收費不對、退費」" in s   # 沒寫說明的照舊
+
+
 def test_a_category_without_a_chinese_name_is_listed_by_its_code():
     rules = [{"category": "recall", "trigger": "召回", "action": "transfer", "script": "s"}]
     assert "- recall:像是「召回」" in _system(rules)
