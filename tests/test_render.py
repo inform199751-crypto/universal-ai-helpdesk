@@ -4,7 +4,7 @@ from jinja2 import UndefinedError
 from app.knowledge.render import render_system_prompt
 
 DATA = {
-    "company": {"name": "微醺之夜", "industry": "restaurant", "hours": "17:00-24:00",
+    "company": {"name": "青木餐酒館", "industry": "restaurant", "hours": "17:00-24:00",
                 "contact": "02-1111-2222", "tone": "親切但不過度熱情",
                 "forbidden_phrases": ["保證", "一定沒問題"]},
     "faq": [{"q": "有停車位嗎", "a": "店門口有兩格,滿了可停對面收費停車場。"}],
@@ -17,7 +17,7 @@ DATA = {
 
 def test_prompt_contains_company_identity():
     p = render_system_prompt(DATA)
-    assert "微醺之夜" in p and "17:00-24:00" in p
+    assert "青木餐酒館" in p and "17:00-24:00" in p
 
 
 def test_prompt_lists_forbidden_phrases():

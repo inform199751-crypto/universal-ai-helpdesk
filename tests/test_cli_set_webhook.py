@@ -18,7 +18,7 @@ def _db():
     Base.metadata.create_all(engine)
     with session_scope() as db:
         db.add(Company(
-            slug="bistro", name="微醺之夜", industry="restaurant",
+            slug="bistro", name="青木餐酒館", industry="restaurant",
             system_prompt="客服", vector_collection="kb_bistro",
             line_channel_secret_enc=encrypt("chan-secret"),
             line_channel_token_enc=encrypt("chan-token"),

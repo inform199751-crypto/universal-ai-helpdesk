@@ -56,7 +56,7 @@ def test_upgrade_keeps_existing_companies_and_defaults_the_rules_to_empty(alembi
             "INSERT INTO companies (id, slug, name, industry, line_channel_secret_enc,"
             " line_channel_token_enc, system_prompt, tone, forbidden_phrases,"
             " fallback_message, human_mode_timeout_minutes, vector_collection, is_active)"
-            " VALUES ('c1', 'bistro', '微醺', 'restaurant', x'00', x'00', 'p', 't', '[]',"
+            " VALUES ('c1', 'bistro', '青木', 'restaurant', x'00', x'00', 'p', 't', '[]',"
             " 'f', 30, 'kb_bistro', 1)"))
     engine.dispose()
 
