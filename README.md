@@ -228,7 +228,7 @@ PostgreSQL 各跑一輪(CI 兩個 job 都會跑;跳過的兩邊剛好相反:一�
 
 | 要做什麼 | 為什麼是下一個 |
 |---|---|
-| **RAG 與知識庫** | 現在整份知識庫是塞進 system prompt 的。2026-09 真機實測每則請求 1,500–2,300 tokens,那時 FAQ 只有 12–13 筆、也還沒有預約說明。2026-10-16 重量 system prompt 的字數:餐飲 12 筆 FAQ 1,725 字、電商 22 筆 2,939 字、診所 21 筆 2,764 字;餐飲與診所每則請求還會再接上約 1,000 字的預約說明。token 數還沒重新實測。二十幾筆還放得下,**200 筆塞不進去**。`knowledge_documents` 資料表與 `companies.vector_collection` 欄位在設計階段就預留了(決策 7:一家一個 collection,不是同一個 collection 用 `company_id` 過濾 —— 過濾法只要有一次忘記加 filter,就會把別家公司的文件回給客人,而且不會報錯)。 |
+| **RAG 與知識庫** | 現在整份知識庫是塞進 system prompt 的。2026-09 真機實測每則請求 1,500–2,300 tokens,那時 FAQ 只有 12–13 筆、也還沒有預約說明。2026-10-16 重量 system prompt 的字數:餐飲 12 筆 FAQ 1,725 字、電商 20 筆 2,503 字、診所 16 筆 2,274 字;餐飲與診所每則請求還會再接上約 1,000 字的預約說明。token 數還沒重新實測。二十筆上下還放得下,**200 筆塞不進去**;而且關思考時,prompt 一改動,診所的 safety 轉真人就可能變不穩(實測從 19/20 掉到六成左右),所以診所的新增內容先收回了一部分。`knowledge_documents` 資料表與 `companies.vector_collection` 欄位在設計階段就預留了(決策 7:一家一個 collection,不是同一個 collection 用 `company_id` 過濾 —— 過濾法只要有一次忘記加 filter,就會把別家公司的文件回給客人,而且不會報錯)。 |
 | **取消與修改預約** | 目前只能新增(請客人來電取消)。`bookings.status` 已預留;要先決定客人怎麼證明「這是我的預約」 |
 | **真人接管** | `users.mode`、`users.mode_expires_at`、`companies.human_mode_timeout_minutes` 已預留,含「客服下班忘記切回 AI,那位客人就永遠等不到回覆」的逾時自動歸還。先做機制,後台介面之後再說。 |
 
