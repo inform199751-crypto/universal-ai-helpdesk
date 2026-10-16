@@ -17,7 +17,7 @@
   category: privacy
   trigger: 病歷、個資、要求刪除資料、不要再傳訊息
   action: transfer
-  script: 病歷與個資相關的申請需要本人辦理,我請專人與您說明流程。
+  script: 病歷與個資相關的申請,我請專人與您說明申請方式與需要準備的文件。
 - level: L1
   category: service
   trigger: 等太久、候診時間長、櫃檯態度

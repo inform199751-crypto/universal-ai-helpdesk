@@ -55,6 +55,7 @@
 | 政策「初診資料」(改) | C10 | [全民健康保險醫療辦法§3](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0060009&flno=3) |
 | 政策「自費項目」(改) | C7、C8 | [醫療法§22](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=22)、[醫療費用收費標準核定作業參考原則 PDF](https://www.mohw.gov.tw/dl-88112-a55c823c-3a65-4be8-bda9-b55ad8553926.html) |
 | 政策「病歷與個資」(改) | C13、C14 | [醫療法§71](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=71)、[醫療法§70](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=70)、[病歷資料調閱授權書範本](https://www.mohw.gov.tw/cp-2657-6342-1.html) |
+| 轉真人話術 privacy(改,觸發字沒動) | C13 | [醫療法§71](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=71) |
 | 禁語加「根治」「百分之百」「最便宜」 | C16、C17、C18 | [醫療法§85](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=85)、[§86](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=86)、[§87](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=87)、[§103](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=103)、[§61](https://law.moj.gov.tw/LawClass/LawSingle.aspx?pcode=L0020021&flno=61) |
 
 ## 刻意不寫具體數字的項目
@@ -62,7 +63,8 @@
 這些數字有的在底稿裡查得到,但會因店家、縣市或年度而變,寫死在示範店裡反而會誤導客人。
 
 - 電商:超商取貨的保管天數;信用卡退刷的入帳天數;個資申請的法定回覆天數(答案只寫「法定期限內」,
-  不讓 bot 自己承諾天數);拆封試用後要負擔多少價值減損;例外商品只舉兩個例子,不列完整清單。
+  不讓 bot 自己承諾天數);拆封試用後要負擔多少價值減損;例外商品只舉兩個例子,不列完整清單;
+  換款式或尺寸時新商品的寄送運費。
 - 診所:門診基本部分負擔的金額(2026 年有沒有再調整沒能確認,醫療資源缺乏地區的金額也不同);
   藥品部分負擔的門檻、比例與上限;掛號費金額(全國沒有上限,由診所自訂);自費項目價格(縣市核定);
   病歷複製費(包括 2010 年的光碟參考價);健保卡補發的工本費、作業天數,以及補發期間可以看診的天數。
@@ -70,7 +72,7 @@
 ## 未驗證、所以沒寫的項目
 
 - 七天(電商)與 15 天(退款)遇到週末、假日怎麼算:官方頁面沒說,答案只寫「收到商品隔天起算七天」。
-- 換貨(不是解除契約)時的運費規則:官方沒有直接說明。所以「想換款式或尺寸」改成七天內退貨後重新下單。
+- 換貨(不是解除契約)時新商品的寄送運費:官方沒有直接說明。所以保留店家的換貨服務,只寫七天內寄回原商品不用負擔任何費用(E2),新商品怎麼寄請客人洽客服,不寫運費。
 - 電子發票中獎通知與兌獎細節、統編發票的規定:財政部電子發票平台的網頁打不開,沒有寫。
 - 網路交易定型化契約 2026 年的修正草案是否定案:不確定,只引用 2016 年版本裡沒有爭議的條文。
 - 診所檢驗、檢查的部分負擔(C3):只在單一頁面看過,沒有寫。
