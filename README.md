@@ -106,6 +106,8 @@ sequenceDiagram
 | 電商 | 退換貨、物流、付款這類規則密集的問答 |
 | 診所 | 高風險場域 —— 不能給醫療建議、必須轉真人 |
 
+電商與診所的退貨、健保、病歷等說法對照過官方規定,依據與網址列在 [docs/industry-content-sources.md](docs/industry-content-sources.md)。
+
 ## 這個專案真正的主張
 
 不是「我用 AI 做了一個聊天機器人」,而是:

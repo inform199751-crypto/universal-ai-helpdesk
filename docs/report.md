@@ -109,6 +109,7 @@ Enum 用 `native_enum=False`、時間欄位一律存 UTC。SQLite 還要用 conn
 
 每個行業就是五份 YAML:`company`(人設、營業時間、**禁語清單**)、
 `faq`、`policies`、`escalation`(什麼時候轉真人)、`glossary`。
+電商與診所 FAQ、政策的事實依據(官方網址、查閱日)見 [industry-content-sources.md](industry-content-sources.md)。
 
 `validate` 的十二條規則分兩個等級,意思不同:
 
