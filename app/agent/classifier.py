@@ -28,9 +28,7 @@ NONE_LABEL = "none"
 # 判成這些等級的規則才轉;prompt 照樣列出全部 transfer 類別,L2 的問題才有地方放,不會被擠進 safety
 ACT_LEVELS = ("L3",)
 # 模型偶爾會把代號包在標點或引號裡(半形、全形都有);去掉這些再比對,其他一律不猜
-_STRIP_CHARS = (" \t\r\n.,!?:;\"'`*()"
-                "。、，！？：；（）"  # 。、,!?:;()
-                "「」『』")                              # 「」『』
+_STRIP_CHARS = " \t\r\n.,!?:;\"'`*()。、，！？：；（）「」『』"
 
 
 def _transfer(rules: list[dict]) -> list[dict]:
