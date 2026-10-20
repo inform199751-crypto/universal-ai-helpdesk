@@ -1,6 +1,9 @@
 - level: L3
   category: safety
   trigger: 我這個症狀是不是、會不會是癌症、要不要吃藥、嚴不嚴重、癌症、腫瘤
+  # 只給轉真人分類層看(app/agent/classifier.py),主 prompt 不放。只看觸發詞時,
+  # 分類層把 safety 理解成意外受傷,「小孩發燒可以吃退燒藥嗎」0/5 判 safety;加上這句 5/5。
+  description: 身體不舒服、症狀、用藥或藥物副作用、要不要繼續用藥或就醫,這類需要醫師判斷的健康問題
   action: transfer
   script: 這需要醫師當面評估才能回答,我無法在線上判斷。請您來電 02-8765-4321 安排看診;若情況緊急請直接就醫。
 - level: L3

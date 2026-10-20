@@ -28,7 +28,7 @@ python -m app.cli list
 | `company.yaml` | 店名、營業時間、聯絡方式、語氣、**禁語清單** | 缺必填欄位 → 規則 2 擋下 |
 | `faq.yaml` | 常見問答 | 答案命中自己的禁語 → 規則 3 擋下 |
 | `policies.yaml` | 規則與政策 | 同上 |
-| `escalation.yaml` | 什麼時候轉真人(L1/L2/L3) | 沒涵蓋 legal/safety/money/privacy → 規則 5 列為 BLOCK |
+| `escalation.yaml` | 什麼時候轉真人(L1/L2/L3)。transfer 規則可以加選填的 `description`(這一類在講什麼),只給轉真人分類層看 —— 觸發詞只是例子,只看例子時模型會把類別理解得太窄 | 沒涵蓋 legal/safety/money/privacy → 規則 5 列為 BLOCK |
 | `glossary.yaml` | 術語解釋 | 術語同時在禁語清單裡 → 規則 7 擋下 |
 | `booking.yaml`(選填) | 預約:時段、每個時段幾組、每筆最多幾人、最遠訂到幾天後、要問的額外欄位 | 格式錯誤 → 規則 11 擋下;時段落在營業時間外 → 規則 12 列為 BLOCK |
 

@@ -201,7 +201,8 @@ def _complete_once(http: httpx.Client, messages: list[dict], endpoint: _Endpoint
 
 def complete(messages: list[dict], *, tools: list[dict] | None = None,
              client: httpx.Client | None = None,
-             deadline: float | None = None) -> LLMResult:
+             deadline: float | None = None,
+             primary_only: bool = False) -> LLMResult:
     """依序試每個上游(見 _endpoints),第一個答得出來的就用。
 
     這不是「延後重送」—— 那會讓客人收到延遲很久的孤立訊息。這裡是在
@@ -210,9 +211,15 @@ def complete(messages: list[dict], *, tools: list[dict] | None = None,
     所有上游合計受 llm_total_budget_seconds 限制,不會越過 LINE reply token
     的一分鐘效期。回傳的 latency_ms 也是合計的 —— 客人實際等了多久。
     deadline(time.monotonic() 的秒數)有傳就用它 —— agent loop 每一步拿的是剩下的時間。
+
+    primary_only=True 只試第一個上游:轉真人分類層用的(見
+    docs/superpowers/specs/2026-10-16-handoff-classifier-design.md 決策 9)——
+    它失敗時既有的三層會接住,退到 OpenRouter 只會白白吃掉一天 50 次的額度。
     """
     s = get_settings()
     endpoints = _endpoints(s)
+    if primary_only:
+        endpoints = endpoints[:1]
 
     own = client is None
     http = client or httpx.Client(timeout=s.llm_timeout_seconds)

@@ -91,6 +91,18 @@ def decision_from_tool(rules: list[dict], arguments: dict) -> Decision:
     return Decision(None, GENERIC_SCRIPT, f"AI —— {reason}")
 
 
+def decision_from_classifier(rules: list[dict], category: str) -> Decision | None:
+    """分類層判定要轉(見 app/agent/classifier.py)。客人聽到的是那一類店家審過的
+    script,跟模型呼叫工具時一樣;依據寫明是分類層,店員查問題時分得出是哪一層轉的。
+
+    類別一定是 parse_label 認得的 transfer 類別;找不到時回 None 只是防禦。
+    """
+    for rule in _transfer_rules(rules):
+        if rule.get("category") == category:
+            return Decision(category, rule["script"], f"AI 分類層 —— {category}")
+    return None
+
+
 RECITED_HISTORY_MARKER = "(這一則已轉給真人處理)"
 
 

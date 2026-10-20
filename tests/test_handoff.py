@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.agent.handoff import (
     EXPIRED_PREFIX, GENERIC_SCRIPT, TOOL_NAME, Decision, as_utc, build_tool,
-    customer_label, decision_from_recited_script, decision_from_tool,
+    customer_label, decision_from_classifier, decision_from_recited_script, decision_from_tool,
     enter_human_mode, is_still_human, match_keyword, return_to_ai, staff_message,
 )
 from app.models import ConversationMode, User
@@ -280,3 +280,25 @@ def test_every_real_transfer_script_that_promises_a_person_reads_as_a_promise(in
               and not (industry == "clinic" and e["category"] == "safety")
               and decision_from_promised_transfer(e["script"]) is None]
     assert missed == []
+
+
+# --- 轉真人分類層(2026-10-16) -------------------------------------------------
+
+CLS_RULES = [
+    {"level": "L3", "category": "safety", "trigger": "症狀、要不要吃藥",
+     "action": "transfer", "script": "這需要醫師當面評估。"},
+    {"level": "L2", "category": "money", "trigger": "多收",
+     "action": "transfer", "script": "我幫您轉給櫃檯。"},
+    {"level": "L1", "category": "service", "trigger": "等太久",
+     "action": "apologize", "script": "很抱歉。"},
+]
+
+
+def test_a_classifier_decision_uses_that_categorys_script_and_says_which_layer():
+    d = decision_from_classifier(CLS_RULES, "money")
+    assert d == Decision("money", "我幫您轉給櫃檯。", "AI 分類層 —— money")
+
+
+def test_a_classifier_decision_for_a_non_transfer_category_is_none():
+    assert decision_from_classifier(CLS_RULES, "service") is None
+    assert decision_from_classifier(CLS_RULES, "weather") is None
