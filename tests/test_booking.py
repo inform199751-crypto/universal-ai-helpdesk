@@ -519,3 +519,73 @@ def test_staff_messages():
         "【新訂位】10/09(五)20:00 4 位 王小明 0912345678")
     assert booking.staff_message(CLINIC, CLINIC_BOOKED) == (
         "【新預約】10/09(五)09:30 青春痘 王小明 0912345678")
+
+
+# --- 假確認安全網(spec 2026-10-30)-------------------------------------------
+
+# 都出自真實回覆:2026-10-27 訂位編造量測(假資料)、線上 10/16 與 10/30(名字電話換成假資料)
+CLAIMS = [
+    "已幫您訂妥 10/30(週五) 20:00 四位,林雅婷 0937-218-406。",
+    "已幫您訂好 2026-10-30(週五)20:00,4 位,林雅婷 0937-218-406。",
+    "已幫妳訂好 10/30(週五)20:00 四位,名稱林雅婷、電話 0937-218-406。",
+    "已幫您完成訂位:2026-10-30(週五)晚間 20:00,4 位,林先生,0937218406。",
+    "已為您訂下週五(2026-10-23)晚上8點4位,王小明先生/小姐,電話0912345678。",
+    "已為您訂好下週五(2026-11-06)晚上8點3位,林雅婷 先生/小姐,電話 0937-218-406。",
+    "好的,2026-10-30(週五)20:00、4 位、林雅婷、0937-218-406,已幫您訂妥。",
+    "好的,2026-10-30(週五)20:00、4位、林雅婷、0937-218-406。訂位完成,請準時前來。",
+    "訂位完成:10/30(五)20:00 四位,林雅婷 0937-218-406。",
+    "已為您預約 11/06(五)09:30,看診項目:青春痘。",
+    "預約成功,請準時報到。",
+    "已經訂好了,到時見。",
+]
+# 正常回覆:講的是「接下來」或「還沒」,不是已經完成
+NOT_CLAIMS = [
+    "好的,10/30(週五)20:00 四位還有位置。請提供您的聯絡電話,我幫您完成訂位。",
+    "請提供您的聯絡電話以完成預約。",
+    "可以訂喔,請問訂位人姓名?",
+    "好的,2026-10-30(週五)20:00 還有位子。還差訂位人姓名,請補一下。",
+    "電話號碼似乎少了一碼,請再確認一次完整的手機號碼。",
+    "還沒為您訂好,請再提供電話。",
+    "您這個時段已經有訂位了,要改人數請直接來電 02-2345-6789",
+    "週一公休。",
+]
+
+
+@pytest.mark.parametrize("text", CLAIMS)
+def test_a_reply_saying_the_booking_is_done_is_recognised(text):
+    assert booking.claims_booked(text)
+
+
+@pytest.mark.parametrize("text", NOT_CLAIMS)
+def test_replies_about_what_happens_next_are_not_claims(text):
+    assert booking.claims_booked(text) is None
+
+
+def test_the_claim_check_returns_the_matched_words_for_the_log():
+    assert booking.claims_booked("好的,已幫您訂妥。") == "已幫您訂"
+
+
+def test_the_unconfirmed_reply_asks_for_everything_at_once_in_the_restaurants_words():
+    assert booking.unconfirmed_text(RESTAURANT, CONTACT) == (
+        "抱歉,這次的訂位還沒有建立成功。請把日期、時段、人數、姓名、電話一次傳給我,"
+        "我馬上為您訂位。如果是想確認之前的訂位,請直接聯繫 02-2345-6789。")
+
+
+def test_the_clinic_unconfirmed_reply_asks_for_the_service_not_the_party_size():
+    assert booking.unconfirmed_text(CLINIC, "02-8765-4321") == (
+        "抱歉,這次的預約還沒有建立成功。請把日期、時段、看診項目、姓名、電話一次傳給我,"
+        "我馬上為您預約。如果是想確認之前的預約,請直接聯繫 02-8765-4321。")
+
+
+def test_without_a_contact_the_unconfirmed_reply_drops_the_last_sentence():
+    assert booking.unconfirmed_text(RESTAURANT, None) == (
+        "抱歉,這次的訂位還沒有建立成功。請把日期、時段、人數、姓名、電話一次傳給我,"
+        "我馬上為您訂位。")
+
+
+def test_the_prompt_still_lists_what_a_booking_needs():
+    """_needs 抽出來共用之後,prompt 那一行的字不能變。"""
+    r = booking.booking_prompt(RESTAURANT, today=date(2026, 10, 6), contact=CONTACT)
+    c = booking.booking_prompt(CLINIC, today=date(2026, 10, 6), contact=CONTACT)
+    assert "- 建立訂位需要:日期、時段、人數、姓名、電話。缺什麼就一次問完。" in r
+    assert "- 建立預約需要:日期、時段、看診項目、姓名、電話。缺什麼就一次問完。" in c
