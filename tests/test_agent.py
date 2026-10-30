@@ -562,7 +562,7 @@ def test_the_default_nvidia_endpoint_and_model_are_the_ones_nvidia_serves(monkey
 
     complete([{"role": "user", "content": "嗨"}], client=_http(handler))
     assert seen == [("https://integrate.api.nvidia.com/v1/chat/completions",
-                     "nvidia/nemotron-3-super-120b-a12b")]
+                     "nvidia/nemotron-3-ultra-550b-a55b")]
 
 
 def test_the_log_says_which_provider_answered(two_providers, caplog):
