@@ -1502,3 +1502,94 @@ def test_a_classifier_transfer_beats_the_fallback_when_the_model_fails(
         _post(client, _body(text="擦了藥膏整片紅腫"))
     assert _replies(line_out) == [SAFETY_SCRIPT]
     assert _mode()[0] == ConversationMode.HUMAN
+
+
+# --- 假確認安全網(spec 2026-10-30)-------------------------------------------
+
+UNCONFIRMED = booking.unconfirmed_text(BOOKING, "02-2345-6789")
+
+
+def test_a_claimed_booking_without_any_booking_this_turn_is_replaced(
+        bookable, line_out, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.WARNING, logger="app.routers.webhook")
+    claim = "已為您訂好下週五晚上8點3位,林雅婷 先生/小姐,電話 0937-218-406。祝您用餐愉快!"
+    _llm_seq(monkeypatch, LLMResult(claim, token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="0937-218-406"))
+    assert _replies(line_out) == [UNCONFIRMED]
+    with session_scope() as db:
+        assert db.scalars(select(Booking)).all() == []
+        last = db.scalars(select(ChatHistory).order_by(ChatHistory.id.desc())).first()
+        assert last.content == UNCONFIRMED      # 紀錄存的是客人實際看到的
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "假確認擋下" in logged and "已為您訂" in logged
+    assert "0937" not in logged and "林雅婷" not in logged   # log 不放個資
+
+
+def test_the_live_false_confirmation_from_2026_10_30_is_caught(bookable, line_out, monkeypatch):
+    """10/30 線上 LINE 重現(假資料):第 2 則電話少碼被程式擋下,第 3 則客人只補電話,
+    模型沒呼叫工具就說訂好了。第 3 則要收到固定回覆,而且一筆預約都沒有。"""
+    day = bookable
+    asked = "下週五晚上8點3位,還有空位。訂位還需要您的姓名與電話。"
+    short = "電話號碼似乎少了一碼,請再確認一次完整的手機號碼。"
+    _llm_seq(monkeypatch,
+             LLMResult(asked, token_count=1, latency_ms=1),
+             _tool_calls(ToolCall("create_booking",
+                                  _args(day, party_size=3, name="林雅婷", phone="0937-2184"),
+                                  id="c1")),
+             LLMResult(short, token_count=1, latency_ms=1),
+             LLMResult(f"已為您訂好{day} 晚上8點3位,林雅婷 先生/小姐,電話 0937-218-406。"
+                       "祝您用餐愉快!", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="下週五晚上8點3位", msg_id="M1"))
+        _post(client, _body(text="林雅婷 0937-2184", msg_id="M2"))
+        _post(client, _body(text="0937-218-406", msg_id="M3"))
+    assert _replies(line_out) == [asked, short, UNCONFIRMED]
+    with session_scope() as db:
+        assert db.scalars(select(Booking)).all() == []
+
+
+def test_a_duplicate_booking_this_turn_counts_as_booked(bookable, line_out, monkeypatch):
+    """客人重送同一筆:工具回 duplicate,那筆預約是真的存在,模型的確認照送(spec 決策 5)。"""
+    day = bookable
+    with session_scope() as db:
+        acme = db.scalar(select(Company).where(Company.slug == "acme"))
+        user = User(company_id=acme.id, line_user_id="U1")
+        db.add(user)
+        db.flush()
+        db.add(Booking(company_id=acme.id, user_id=user.id, booking_date=date.fromisoformat(day),
+                       booking_time="20:00", party_size=4, name="王小明", phone="0912345678",
+                       status="confirmed"))
+    _llm_seq(monkeypatch,
+             _tool_calls(ToolCall("create_booking", _args(day), id="c1")),
+             LLMResult("已為您訂好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="週五晚上 8 點 4 位,王小明 0912-345-678"))
+    assert _replies(line_out) == ["已為您訂好"]
+
+
+def test_without_a_booking_config_the_same_words_go_out_as_is(line_out, monkeypatch):
+    """電商沒有預約:同樣的字不擋(spec 第一節)。"""
+    _llm_seq(monkeypatch, LLMResult("已為您訂好", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == ["已為您訂好"]
+
+
+def test_a_claim_in_simplified_chinese_is_caught_after_conversion(bookable, line_out, monkeypatch):
+    """判斷放在簡繁轉換之後(spec 決策 6):模型偶爾輸出簡體。"""
+    _llm_seq(monkeypatch, LLMResult("已为您订好,4 位。", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="0937-218-406"))
+    assert _replies(line_out) == [UNCONFIRMED]
+
+
+def test_a_promised_transfer_still_wins_over_the_false_confirmation_check(
+        bookable, rules, line_out, monkeypatch):
+    """轉真人排在前面(spec 第五節):回覆同時說訂好了、又說要轉接 —— 客人被轉,收到店家的通用句。"""
+    _llm_seq(monkeypatch, LLMResult("已為您訂好,另外我將為您轉接店長。", token_count=1, latency_ms=1))
+    with TestClient(app) as client:
+        _post(client, _body(text="訂位"))
+    assert _replies(line_out) == [GENERIC_SCRIPT]
+    assert _mode()[0] == ConversationMode.HUMAN

@@ -412,6 +412,15 @@ def process_text_event(*, company_id: str, line_user_id: str, text: str,
                 converted = ensure_traditional(name)
                 if converted != name:
                     model_text = model_text.replace(converted, name)
+            # 假確認安全網(spec 2026-10-30):模型說訂好了,這一輪卻沒有成立任何預約 ——
+            # 2026-10-27 量測 S6、10/30 線上都出現過,客人會以為訂到了。不送那句,改送固定回覆
+            # 請客人一次傳來(一句話講完的訂位實測 10/10 成立)。放在簡繁轉換之後,簡體的也抓得到。
+            # log 只記命中的字:原文有客人姓名電話。
+            claimed = (booking.claims_booked(model_text)
+                       if booking_config and not booked else None)
+            if claimed:
+                logger.warning("假確認擋下 客人 …%s 命中「%s」", line_user_id[-6:], claimed)
+                model_text = booking.unconfirmed_text(booking_config, contact)
             # 只有模型真的回了答案才加:fallback 前面接「專員不在線上」沒有意義
             answer = expired_prefix + model_text
             tokens, latency = agent.token_count, agent.latency_ms

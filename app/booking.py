@@ -76,6 +76,15 @@ def _asks_party(config: dict) -> bool:
     return config["max_party"] > 1
 
 
+def _needs(config: dict) -> list[str]:
+    """建立預約需要的資料。prompt 跟擋下假確認時的固定回覆用同一份,兩邊才不會講得不一樣。"""
+    needs = ["日期", "時段"]
+    if _asks_party(config):
+        needs.append("人數")
+    needs += [f["label"] for f in config.get("fields") or []]
+    return needs + ["姓名", "電話"]
+
+
 def _fail(error: str) -> dict:
     return {"ok": False, "error": error}
 
@@ -145,11 +154,7 @@ def booking_prompt(config: dict, *, today: date, contact: str | None) -> str:
         f"週{_weekday(d)}→{d.isoformat()}" + ("" if _weekday(d) in open_days else "(公休)")
         + (f"(超出可{label}範圍)" if d > last else "")
         for d in (_next_week(today, w) for w in WEEKDAYS))
-    needs = ["日期", "時段"]
-    if _asks_party(config):
-        needs.append("人數")
-    needs += [f["label"] for f in config.get("fields") or []]
-    needs += ["姓名", "電話"]
+    needs = _needs(config)
     lines = [
         f"## {label}",
         f"今天是 {today.isoformat()}({_weekday(today)}),時區是台灣。",
@@ -338,6 +343,38 @@ def confirmation_text(config: dict, booking: dict) -> str:
             parts.append(f"{field['label']}:{value}")
     parts.append(f"{label}人{booking['name']}")
     return ",".join(parts) + "。"
+
+
+# 宣稱預約「已經成立」的說法(spec 2026-10-30 第三節)。只抓已經完成的講法 ——
+# 「我幫您完成訂位」「以便完成預約」講的是接下來,正常回覆天天都有,抓了會把請客人補資料的回覆換掉。
+# 「爲」:模型偶爾輸出簡體,ensure_traditional 把「为」轉成異體的「爲」,不是「為」。
+_YOU = "(?:您|妳|你)?"
+_DONE = "(?:訂位|預約|掛號)"
+CLAIM_RE = re.compile(
+    rf"已(?:經)?(?:幫|為|爲){_YOU}(?:訂|預約|掛號|保留|完成{_DONE})"
+    rf"|{_DONE}(?:已)?(?:完成|成功)"
+    rf"|已(?:經)?(?:訂好|訂妥|完成{_DONE})"
+    rf"|訂妥")
+
+
+def claims_booked(text: str) -> str | None:
+    """回覆是否宣稱預約已經成立。命中回傳命中的那段字(給 log 用,不記原文),沒有回 None。"""
+    m = CLAIM_RE.search(text)
+    return m.group(0) if m else None
+
+
+def unconfirmed_text(config: dict, contact: str | None) -> str:
+    """擋下假確認時送給客人的固定回覆。
+
+    請客人一次傳來:一句話講完的訂位實測 10/10 成立(2026-10-27 量測)。最後一句是因為
+    模型偶爾會提到上一輪已經成立的預約 —— 這一輪沒成立就會被擋,兩種情況這句都是實話。
+    """
+    label = config["label"]
+    text = (f"抱歉,這次的{label}還沒有建立成功。請把{'、'.join(_needs(config))}一次傳給我,"
+            f"我馬上為您{label}。")
+    if contact:
+        text += f"如果是想確認之前的{label},請直接聯繫 {contact}。"
+    return text
 
 
 def staff_message(config: dict, booking: dict) -> str:
