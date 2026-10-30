@@ -40,6 +40,14 @@ def test_default_models_both_support_tool_calling(monkeypatch):
     assert s.openrouter_fallback_model == "nvidia/nemotron-3-super-120b-a12b:free"
 
 
+def test_the_default_nvidia_model_is_ultra(monkeypatch):
+    """2026-10-27 起 super 在 NVIDIA 回 404「Function not found for account」(/v1/models 還列著它)。
+    預設停在 super 的話,主機 .env 少一行、或在別台重架,bot 就直接壞。"""
+    monkeypatch.delenv("NVIDIA_MODEL", raising=False)
+    s = Settings(_env_file=None, fernet_key="k", openrouter_api_key="k")
+    assert s.nvidia_model == "nvidia/nemotron-3-ultra-550b-a55b"
+
+
 @pytest.mark.parametrize("field", ["rate_limit_user_per_minute", "rate_limit_user_per_day",
                                    "rate_limit_global_per_minute"])
 def test_a_negative_rate_limit_is_rejected(field):
